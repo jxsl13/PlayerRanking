@@ -56,7 +56,6 @@ public:
 
     CRankingServer(std::string host, size_t port, uint32_t timeout = 0);
     void UpdateRanking(std::string nickname,struct CPlayerStats stats, std::string prefix = "");
-    void Test();
 
 
     ~CRankingServer();
