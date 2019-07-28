@@ -1,4 +1,5 @@
-[submodule "cpp_redis"]
+[submodule "src/3rdparty/cpp_redis"]
 	path = src/3rdparty/cpp_redis
-	url = https://github.com/cpp-redis/cpp_redis.git
+	url = git://github.com/cpp-redis/cpp_redis.git
+	branch = master
 
