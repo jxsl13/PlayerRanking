@@ -90,17 +90,16 @@ void CRankingServer::UpdateRankingSync(std::string nickname, struct CPlayerStats
 void CRankingServer::UpdateRanking(std::string nickname, struct CPlayerStats stats, std::string prefix)
 {
     std::cout << "started update" << std::endl;
-    m_Futures.push_back(std::async(std::launch::async, &CRankingServer::UpdateRanking, this, nickname, stats, prefix));
+    CleanFutures();
+
+    m_Futures.push_back(std::async(std::launch::async, &CRankingServer::UpdateRankingSync, this, nickname, stats, prefix));
 }
 
 void CRankingServer::CleanFutures()
 {
-    int cleaned = 0;
-
     auto it = std::remove_if(m_Futures.begin(), m_Futures.end(), [&](std::future<void> &f){
         if (std::future_status::ready == f.wait_for(std::chrono::milliseconds(0)))
         {
-           cleaned++;
            return true;
         }
         return false;
@@ -110,28 +109,19 @@ void CRankingServer::CleanFutures()
 
 void CRankingServer::WaitFutures() 
 {
-
 	unsigned long size = m_Futures.size();
 
-    std::cout << "wait futures: size: " << size << std::endl;
-
-	for (unsigned long i = 0; i < size; ++i)
-	{
-		std::future<void> f = std::move(m_Futures.back());
-		m_Futures.pop_back();
-
-		f.wait();
-        std::cout << "waited for future: " << i << std::endl;
-	}
-
+    for (auto &f : m_Futures)
+    {
+        f.wait();
+    }
+    
+    CleanFutures();
 }
 
 CRankingServer::~CRankingServer()
 {
-    std::cout << "dtor: before wait" << std::endl;
     WaitFutures();
-
-    std::cout << "dtor: after wait" << std::endl;
 
     std::lock_guard<std::mutex> lock(m_ClientMutex);
     if (m_Client.is_connected())
