@@ -47,6 +47,7 @@ private:
     
     std::vector<std::future<void> > m_Futures;
 
+
     void CleanFutures();
     void WaitFutures();
 

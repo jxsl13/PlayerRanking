@@ -53,6 +53,7 @@ test/test_runner
 build/release/*
 build/debug/*
 build/run/*
+build/*
 
 include/*
 lib/*
@@ -63,3 +64,4 @@ bin/lib-bash
 
 
 .vscode
+xcode/*

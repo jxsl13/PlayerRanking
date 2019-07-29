@@ -6,6 +6,7 @@
 
 CRankingServer::CRankingServer(std::string host, size_t port, uint32_t timeout) : m_Host{host}, m_Port{port}
 {
+    std::lock_guard<std::mutex> lock(m_ClientMutex);
     try
     {
         m_Client.connect(m_Host, m_Port, nullptr, timeout);
@@ -17,10 +18,10 @@ CRankingServer::CRankingServer(std::string host, size_t port, uint32_t timeout) 
     catch(const std::exception& e)
     {
         std::cout << "[redis]: " << "failed to connect to " << m_Host << ":" << m_Port << std::endl;
-    }      
+    } 
 }
 
-void CRankingServer::UpdateRankingSync(std::string nickname,struct CPlayerStats stats, std::string prefix)
+void CRankingServer::UpdateRankingSync(std::string nickname, struct CPlayerStats stats, std::string prefix)
 {
     int Kills = 0;  
     int Deaths = 0; 
@@ -32,7 +33,6 @@ void CRankingServer::UpdateRankingSync(std::string nickname,struct CPlayerStats 
 
     // lock client access
     std::lock_guard<std::mutex> lock(m_ClientMutex);
-
     std::future<cpp_redis::reply> existsFuture = m_Client.exists({nickname});
     m_Client.sync_commit();
 
@@ -83,13 +83,14 @@ void CRankingServer::UpdateRankingSync(std::string nickname,struct CPlayerStats 
         { prefix + "Fails", std::to_string(Fails) },
         { prefix + "Shots", std::to_string(Shots) }
     });
+    
     m_Client.sync_commit();
 }
 
-void CRankingServer::UpdateRanking(std::string nickname,struct CPlayerStats stats, std::string prefix)
+void CRankingServer::UpdateRanking(std::string nickname, struct CPlayerStats stats, std::string prefix)
 {
-    std::future<void> f = std::async(std::launch::async, &CRankingServer::UpdateRanking, this, nickname, stats, prefix);
-    m_Futures.push_back(std::move(f));
+    std::cout << "started update" << std::endl;
+    m_Futures.push_back(std::async(std::launch::async, &CRankingServer::UpdateRanking, this, nickname, stats, prefix));
 }
 
 void CRankingServer::CleanFutures()
@@ -97,7 +98,7 @@ void CRankingServer::CleanFutures()
     int cleaned = 0;
 
     auto it = std::remove_if(m_Futures.begin(), m_Futures.end(), [&](std::future<void> &f){
-        if (std::future_status::ready == f.wait_for(std::chrono::seconds(0)))
+        if (std::future_status::ready == f.wait_for(std::chrono::milliseconds(0)))
         {
            cleaned++;
            return true;
@@ -105,26 +106,38 @@ void CRankingServer::CleanFutures()
         return false;
     });
     m_Futures.erase(it, m_Futures.end());
-    std::cout << "cleaned " << cleaned << " futures" << std::endl;
 }
 
-void CRankingServer::WaitFutures()
+void CRankingServer::WaitFutures() 
 {
-    for (auto &f : m_Futures)
-    {
-        f.wait();
-        f.get();
-    }
+
+	unsigned long size = m_Futures.size();
+
+    std::cout << "wait futures: size: " << size << std::endl;
+
+	for (unsigned long i = 0; i < size; ++i)
+	{
+		std::future<void> f = std::move(m_Futures.back());
+		m_Futures.pop_back();
+
+		f.wait();
+        std::cout << "waited for future: " << i << std::endl;
+	}
+
 }
 
 CRankingServer::~CRankingServer()
 {
+    std::cout << "dtor: before wait" << std::endl;
     WaitFutures();
-    CleanFutures();
+
+    std::cout << "dtor: after wait" << std::endl;
+
+    std::lock_guard<std::mutex> lock(m_ClientMutex);
     if (m_Client.is_connected())
     {
         m_Client.disconnect(true);
         std::cout << "[redis]: disconnected from database" << std::endl;
-    }   
+    }
 }
 
