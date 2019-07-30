@@ -3,7 +3,6 @@
 #include <chrono>
 #include <future>
 #include <iostream>
-#include <limits>
 
 CRankingServer::CRankingServer(std::string host, size_t port, uint32_t timeout, uint32_t reconnect_ms) : m_Host{host}, m_Port{port}
 {

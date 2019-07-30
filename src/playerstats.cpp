@@ -3,7 +3,7 @@
 
 CPlayerStats::CPlayerStats(): CPlayerStats(0, 0, 0, 0, 0, 0, 0)
 {
-
+    
 }
 
 void CPlayerStats::Reset()
