@@ -15,6 +15,12 @@ void CPlayerStats::Reset()
     }
 }
 
+void CPlayerStats::Invalidate() {
+    Reset();
+    m_IsValid = false; 
+    
+}
+
 CPlayerStats::CPlayerStats(int kills, int deaths, int ticksCaught, int ticksIngame, int score, int fails, int shots) : m_IsValid{true}
 {
     m_Data = {

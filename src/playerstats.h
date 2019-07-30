@@ -18,7 +18,7 @@ private:
 
 public:
     std::map<std::string, int> m_Data;
-    void Invalidate() {m_IsValid = false;};
+    void Invalidate();
     bool IsValid(){return m_IsValid;};
 
     void Reset();

@@ -3,9 +3,14 @@
 #include <chrono>
 #include <future>
 #include <iostream>
+#include <limits>
 
 CRankingServer::CRankingServer(std::string host, size_t port, uint32_t timeout, uint32_t reconnect_ms) : m_Host{host}, m_Port{port}
 {
+    // all possible fields are invalid nicks
+    CPlayerStats tmp;
+    m_InvalidNicknames = tmp.keys();
+
     m_ReconnectIntervalMilliseconds = reconnect_ms;
     try
     {
@@ -50,7 +55,7 @@ void CRankingServer::HandleReconnecting()
             // forceful shutdown
             m_ReconnectHandlerMutex.unlock();
 
-            // forceful shutdown, is done, when the ranking server is 
+            // forceful shutdown, is done, when the ranking server is
             // shutting down.
             CleanupBacklog();
             return;
@@ -77,7 +82,7 @@ void CRankingServer::StartReconnectHandler()
     m_Futures.push_back(std::async(std::launch::async, &CRankingServer::HandleReconnecting, this));
 }
 
-bool CRankingServer::IsValidNickname(const std::string& nickname)
+bool CRankingServer::IsValidNickname(const std::string& nickname, const std::string& prefix)
 {
     if (nickname.size() == 0)
         return false; // empty string nick -> no rankings for you
@@ -87,6 +92,8 @@ bool CRankingServer::IsValidNickname(const std::string& nickname)
     for (auto name : m_InvalidNicknames)
     {
         if (nickname == name)
+            return false;
+        else if (nickname == (prefix + name))
             return false;
     }
     return true;
@@ -116,7 +123,14 @@ CPlayerStats CRankingServer::GetRankingSync(std::string nickname, std::string pr
             int idx = 0;
             for (auto& key : stats.keys())
             {
-                if (result.at(idx).is_string())
+                if (result.at(idx).is_null())
+                {
+                    // result is null
+                    // key not found
+                    stats.Invalidate();
+                    break; // entry does not exist yet.
+                }
+                else if (result.at(idx).is_string())
                 {
                     stats[key] = std::stoi(result.at(idx).as_string());
                 }
@@ -124,14 +138,11 @@ CPlayerStats CRankingServer::GetRankingSync(std::string nickname, std::string pr
                 {
                     stats[key] = result.at(idx).as_integer();
                 }
-                else if (result.at(idx).is_null())
-                {
-                    // result is null
-                    break; // entry does not exist yet.
-                }
                 else
                 {
-                    std::cerr << "[redis_error]: unkown result type\n";
+                    std::cout << "[redis_error]: unkown result type" << std::endl;
+                    stats.Invalidate();
+                    break;
                 }
                 idx++;
             }
@@ -150,7 +161,7 @@ CPlayerStats CRankingServer::GetRankingSync(std::string nickname, std::string pr
 void CRankingServer::GetRanking(std::string nickname, std::function<void(CPlayerStats&)> callback, std::string prefix)
 {
     // fix disconnect state that might have occurred in the mean time
-    CleanFutures();
+    CleanupFutures();
 
     if (callback)
     {
@@ -163,9 +174,87 @@ void CRankingServer::GetRanking(std::string nickname, std::function<void(CPlayer
     }
 }
 
+void CRankingServer::GetTopRanking(int topNumber, std::string key, std::function<void(std::vector<std::pair<std::string, CPlayerStats> >&)> callback, std::string prefix, bool biggestFirst)
+{
+    m_Futures.push_back(std::async(std::launch::async, [this](int topNum, std::string field, decltype(callback) cb, std::string pref, bool bigFirst){
+            std::vector<std::pair<std::string, CPlayerStats> > result = this->GetTopRankingSync(topNum, field, pref, bigFirst);
+            cb(result);
+    }, topNumber, key, callback, prefix, biggestFirst));
+}
+
+std::vector<std::pair<std::string, CPlayerStats> > CRankingServer::GetTopRankingSync(int topNumber, std::string key, std::string prefix, bool biggestFirst)
+{
+    std::string index = prefix + key;
+
+    try
+    {
+        std::future<cpp_redis::reply> existsFuture = m_Client.exists({index});
+        m_Client.sync_commit();
+
+        cpp_redis::reply existsReply = existsFuture.get();
+
+        if (existsReply.is_integer() && existsReply.as_integer() != 0)
+        {
+            // specified index exists
+            std::future<cpp_redis::reply> resultFuture;
+            
+            if (biggestFirst)
+            {
+                resultFuture = m_Client.zrevrangebyscore(index, "+inf", "0", 0, topNumber);
+            }
+            else
+            {
+               resultFuture = m_Client.zrangebyscore(index, "0", "+inf", 0, topNumber);
+            }
+             
+            m_Client.sync_commit();
+
+            cpp_redis::reply result = resultFuture.get();
+
+            if (result.is_array())
+            {
+                std::vector<std::pair<std::string, CPlayerStats> > sortedResult;
+
+                for (auto& r: result.as_array())
+                {
+                    if (r.is_string())
+                    {
+                        sortedResult.push_back({r.as_string(), {/* empty*/}});
+                    }
+                    else
+                    {
+                        throw cpp_redis::redis_error("Expected string as nickname.");
+                    }
+                }
+                
+                for (auto& [nickname, stats] : sortedResult)
+                {
+                    stats = GetRankingSync(nickname, prefix);
+                }
+                
+                return sortedResult;
+
+            }
+            else
+            {
+                throw cpp_redis::redis_error("Expected array return value of z[rev]rangebyscore(...)");
+            }
+        }
+        else
+        {
+            throw cpp_redis::redis_error("exists: expected integer reply");
+        }
+    }
+    catch (const cpp_redis::redis_error& e)
+    {
+        std::cerr << e.what() << '\n';
+        return {};
+    }
+}
+
 void CRankingServer::DeleteRanking(std::string nickname, std::string prefix)
 {
-    CleanFutures();
+    CleanupFutures();
 
     m_Futures.push_back(std::async(std::launch::async, &CRankingServer::DeleteRankingSync, this, nickname, prefix));
 }
@@ -179,29 +268,56 @@ void CRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats stats,
         dbStats = GetRankingSync(nickname, prefix);
 
         if (!dbStats.IsValid())
-            throw cpp_redis::redis_error(""); // jump to lost connection
+            throw cpp_redis::redis_error(""); // jump to lost connection or nick not found
 
         dbStats += stats;
 
         std::future<cpp_redis::reply> setFuture = m_Client.hmset(nickname, dbStats.GetStringPairs(prefix));
 
+        // create/update index for every key
+        std::vector<std::string> options = {};
+        std::vector<std::future<cpp_redis::reply> > indexFutures;
+        for (auto& key : dbStats.keys())
+        {
+            indexFutures.push_back(
+                m_Client.zadd(prefix + key,
+                              options,
+                              {{std::to_string(dbStats[key]), nickname}}));
+        }
+
         m_Client.sync_commit();
+        for (auto& f : indexFutures)
+        {
+            cpp_redis::reply r = f.get();
+            // retrieve results
+            // don't do anything with it.
+        }
     }
     catch (const cpp_redis::redis_error& e)
     {
-        std::cout << "[redis]: lost connection: " << e.what() << std::endl;
-        std::lock_guard<std::mutex> lock(m_BacklogMutex);
-        m_Backlog.push_back({"update", nickname, stats, prefix});
-        StartReconnectHandler();
+        if (!m_Client.is_connected())
+        {
+            std::cout << "[redis]: lost connection: " << e.what() << std::endl;
+            StartReconnectHandler();
+            std::lock_guard<std::mutex> lock(m_BacklogMutex);
+            m_Backlog.push_back({"update", nickname, stats, prefix});
+        }
+        else
+        {
+            std::cout << "invalid nickname: " << nickname << std::endl;
+            // invalid player nick retrieved.
+            // don't do anything then.
+        }
+
         return;
     }
 }
 
 bool CRankingServer::UpdateRanking(std::string nickname, CPlayerStats stats, std::string prefix)
 {
-    CleanFutures();
+    CleanupFutures();
 
-    if (!IsValidNickname(nickname))
+    if (!IsValidNickname(nickname, prefix))
         return false;
 
     m_Futures.push_back(std::async(std::launch::async, &CRankingServer::UpdateRankingSync, this, nickname, stats, prefix));
@@ -222,11 +338,29 @@ void CRankingServer::DeleteRankingSync(std::string nickname, std::string prefix)
 
         if (existsReply.as_integer()) // exists
         {
+            // check if type is hash
+            std::future<cpp_redis::reply> typeFuture = m_Client.type(nickname);
+            m_Client.sync_commit();
+            cpp_redis::reply typeReply = typeFuture.get();
+
+            if (typeReply.is_string() && typeReply.as_string() != "hash")
+            {
+                std::cout << "Deleting: " << nickname << " failed, type is not hash: " << typeReply.as_string() << std::endl;
+                return; // invalid object
+            }
+            else if (!typeReply.is_string())
+            {
+                std::cout << "Deleting: " << nickname << " failed, reply not a string." << std::endl;
+                return;
+            }
+
+            // all keys represent individual index names
             std::future<cpp_redis::reply> allKeysFuture = m_Client.hkeys(nickname);
             m_Client.sync_commit();
             cpp_redis::reply keysReply = allKeysFuture.get();
 
             // contains keys that ought to be deleted
+            // these keys also identify the sorted set indices
             std::vector<std::string> keys;
             if (keysReply.is_array())
             {
@@ -254,6 +388,7 @@ void CRankingServer::DeleteRankingSync(std::string nickname, std::string prefix)
             }
 
             std::future<cpp_redis::reply> delFuture;
+            std::vector<std::future<cpp_redis::reply> > delIndicesFutures;
 
             if (prefix.size() > 0)
             {
@@ -278,7 +413,7 @@ void CRankingServer::DeleteRankingSync(std::string nickname, std::string prefix)
 
                 if (keys.size() == 0)
                 {
-                    std::cout << "no keys matching prefix" << std::endl;
+                    std::cout << "no keys matching prefix: '" << prefix << "'. Did not delete any entries for " << nickname << std::endl;
                     return;
                 }
 
@@ -291,6 +426,13 @@ void CRankingServer::DeleteRankingSync(std::string nickname, std::string prefix)
                 delFuture = m_Client.del({nickname});
             }
 
+            // remove idices
+
+            for (auto& key : keys)
+            {
+                delIndicesFutures.push_back(m_Client.zrem(key, {nickname}));
+            }
+
             m_Client.sync_commit();
             cpp_redis::reply reply = delFuture.get();
 
@@ -301,25 +443,48 @@ void CRankingServer::DeleteRankingSync(std::string nickname, std::string prefix)
             }
             else
             {
-                std::cout << reply << std::endl;
+                std::cout << "Invalid result, expected integer: " << reply << std::endl;
             }
 
             if (!result)
             {
                 throw cpp_redis::redis_error("deletion failed");
             }
+
+            int tmp = 0;
+            for (auto& f : delIndicesFutures)
+            {
+                cpp_redis::reply delIndexReply = f.get();
+
+                if (delIndexReply.is_integer())
+                {
+                    tmp = delIndexReply.is_integer();
+                    if (!tmp)
+                    {
+                        std::cout << "Failed to delete an index: " << delIndexReply << std::endl;
+                    }
+                }
+                else
+                {
+                    throw cpp_redis::redis_error("failed to delete index: ");
+                }
+            }
         }
     }
     catch (const cpp_redis::redis_error& e)
     {
-        std::cout << "[redis]: lost connection: " << e.what() << std::endl;
-        std::lock_guard<std::mutex> lock(m_BacklogMutex);
-        m_Backlog.push_back({"delete", nickname, CPlayerStats(), prefix});
-        StartReconnectHandler();
+        // connection lost -> push tast into backlog
+        if (!m_Client.is_connected())
+        {
+            std::cout << "[redis]: lost connection: " << e.what() << std::endl;
+            std::lock_guard<std::mutex> lock(m_BacklogMutex);
+            m_Backlog.push_back({"delete", nickname, CPlayerStats(), prefix});
+            StartReconnectHandler();
+        }
     }
 }
 
-void CRankingServer::CleanupBacklog(std::string text)
+void CRankingServer::CleanupBacklog()
 {
     std::lock_guard<std::mutex> lock(m_BacklogMutex);
     if (m_Backlog.size() > 0)
@@ -355,20 +520,20 @@ void CRankingServer::CleanupBacklog(std::string text)
     }
 }
 
-void CRankingServer::CleanFutures()
+void CRankingServer::CleanupFutures()
 {
     if (m_Futures.size() == 0)
         return;
 
     auto it = std::remove_if(m_Futures.begin(), m_Futures.end(), [&](std::future<void>& f) {
+        if(!f.valid())
+            return true;
+        
         if (std::future_status::ready == f.wait_for(std::chrono::milliseconds(0)))
         {
             try
             {
-                if (f.valid())
-                {
-                    f.get();
-                }
+                f.get();
             }
             catch (const std::exception& e)
             {
@@ -382,13 +547,13 @@ void CRankingServer::CleanFutures()
     m_Futures.erase(it, m_Futures.end());
 }
 
-void CRankingServer::WaitFutures()
+void CRankingServer::AwaitFutures()
 {
     for (auto& f : m_Futures)
     {
-        f.wait();
         if (f.valid())
         {
+            f.wait();
             try
             {
                 f.get();
@@ -408,7 +573,7 @@ CRankingServer::~CRankingServer()
     m_IsReconnectHandlerRunning = false;
     m_ReconnectHandlerMutex.unlock();
 
-    WaitFutures();
+    AwaitFutures();
 
     if (m_Client.is_connected())
     {
