@@ -3,10 +3,14 @@ project(rankingserver)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_BUILD_TYPE Debug)
 
+set(HEADER_FILES
+playerstats.h
+rankingserver.h
+)
 
 set(SOURCE_FILES 
+${HEADER_FILES}
 main.cpp
 rankingserver.cpp
 playerstats.cpp

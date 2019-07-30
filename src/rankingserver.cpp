@@ -175,10 +175,12 @@ void CRankingServer::GetRanking(std::string nickname, std::function<void(CPlayer
 
 void CRankingServer::GetTopRanking(int topNumber, std::string key, std::function<void(std::vector<std::pair<std::string, CPlayerStats> >&)> callback, std::string prefix, bool biggestFirst)
 {
-    m_Futures.push_back(std::async(std::launch::async, [this](int topNum, std::string field, decltype(callback) cb, std::string pref, bool bigFirst){
+    m_Futures.push_back(std::async(
+        std::launch::async, [this](int topNum, std::string field, decltype(callback) cb, std::string pref, bool bigFirst) {
             std::vector<std::pair<std::string, CPlayerStats> > result = this->GetTopRankingSync(topNum, field, pref, bigFirst);
             cb(result);
-    }, topNumber, key, callback, prefix, biggestFirst));
+        },
+        topNumber, key, callback, prefix, biggestFirst));
 }
 
 std::vector<std::pair<std::string, CPlayerStats> > CRankingServer::GetTopRankingSync(int topNumber, std::string key, std::string prefix, bool biggestFirst)
@@ -196,16 +198,16 @@ std::vector<std::pair<std::string, CPlayerStats> > CRankingServer::GetTopRanking
         {
             // specified index exists
             std::future<cpp_redis::reply> resultFuture;
-            
+
             if (biggestFirst)
             {
                 resultFuture = m_Client.zrevrangebyscore(index, "+inf", "0", 0, topNumber);
             }
             else
             {
-               resultFuture = m_Client.zrangebyscore(index, "0", "+inf", 0, topNumber);
+                resultFuture = m_Client.zrangebyscore(index, "0", "+inf", 0, topNumber);
             }
-             
+
             m_Client.sync_commit();
 
             cpp_redis::reply result = resultFuture.get();
@@ -214,7 +216,7 @@ std::vector<std::pair<std::string, CPlayerStats> > CRankingServer::GetTopRanking
             {
                 std::vector<std::pair<std::string, CPlayerStats> > sortedResult;
 
-                for (auto& r: result.as_array())
+                for (auto& r : result.as_array())
                 {
                     if (r.is_string())
                     {
@@ -225,14 +227,13 @@ std::vector<std::pair<std::string, CPlayerStats> > CRankingServer::GetTopRanking
                         throw cpp_redis::redis_error("Expected string as nickname.");
                     }
                 }
-                
+
                 for (auto& [nickname, stats] : sortedResult)
                 {
                     stats = GetRankingSync(nickname, prefix);
                 }
-                
-                return sortedResult;
 
+                return sortedResult;
             }
             else
             {
@@ -525,9 +526,9 @@ void CRankingServer::CleanupFutures()
         return;
 
     auto it = std::remove_if(m_Futures.begin(), m_Futures.end(), [&](std::future<void>& f) {
-        if(!f.valid())
+        if (!f.valid())
             return true;
-        
+
         if (std::future_status::ready == f.wait_for(std::chrono::milliseconds(0)))
         {
             try

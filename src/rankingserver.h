@@ -3,20 +3,17 @@
 
 #include "playerstats.h"
 
-#include <mutex>
-#include <string>
+#include <cpp_redis/cpp_redis>
 #include <functional>
 #include <future>
-#include <vector>
+#include <mutex>
+#include <string>
 #include <tuple>
-#include <stdexcept>
-#include <cpp_redis/cpp_redis>
- 
+#include <vector>
 
 class CRankingServer
-{   
-
-private:
+{
+   private:
     // redis server host & port
     std::string m_Host;
     size_t m_Port;
@@ -26,8 +23,7 @@ private:
 
     std::vector<std::string> m_InvalidNicknames;
     bool IsValidNickname(const std::string& nickname, const std::string& prefix = "");
-    
-    
+
     // saving futures for later cleanup
     std::vector<std::future<void> > m_Futures;
 
@@ -59,22 +55,20 @@ private:
 
     // retrieve top x player ranks based on their key property(like score, kills etc.).
     std::vector<std::pair<std::string, CPlayerStats> > GetTopRankingSync(int topNumber, std::string key, std::string prefix = "", bool biggestFirst = true);
-    
-public:
 
+   public:
     // constructor
     CRankingServer(std::string host, size_t port, uint32_t timeout = 10000, uint32_t reconnect_ms = 5000);
-
 
     // gets data and does stuff that's defined in callback with it.
     // if no callback is provided, nothing is done.
     void GetRanking(std::string nickname, std::function<void(CPlayerStats&)> calback = nullptr, std::string prefix = "");
 
     // possible keys CPlayerStats::keys()
-    void GetTopRanking(int topNumber, std::string key, std::function<void(std::vector<std::pair<std::string, CPlayerStats> >&)> callback = nullptr,  std::string prefix = "", bool biggestFirst = true);
+    void GetTopRanking(int topNumber, std::string key, std::function<void(std::vector<std::pair<std::string, CPlayerStats> >&)> callback = nullptr, std::string prefix = "", bool biggestFirst = true);
 
     // starts async execution of if nickname is valid
-    bool UpdateRanking(std::string nickname,  CPlayerStats stats, std::string prefix = "");
+    bool UpdateRanking(std::string nickname, CPlayerStats stats, std::string prefix = "");
 
     // if prefix is empty, the whole player is deleted.
     void DeleteRanking(std::string nickname, std::string prefix = "");
@@ -86,8 +80,5 @@ public:
 
     ~CRankingServer();
 };
-
-
-
 
 #endif // GAME_SERVER_RANKINGSERVER_H

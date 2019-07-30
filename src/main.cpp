@@ -1,7 +1,4 @@
 
-#include <iostream>
-#include <string>
-#include <thread>
 #include "rankingserver.h"
 
 int main(int argc, const char* argv[])
