@@ -1,63 +1,82 @@
 #ifndef GAME_SERVER_RANKINGSERVER_H
 #define GAME_SERVER_RANKINGSERVER_H
 
+#include "playerstats.h"
+
 #include <mutex>
 #include <string>
+#include <functional>
 #include <future>
 #include <vector>
+#include <tuple>
+#include <stdexcept>
 #include <cpp_redis/cpp_redis>
  
 
 class CRankingServer
-{
-public:
-    struct CPlayerStats
-    {
-        int m_Kills;
-        int m_Deaths;
-        int m_TicksCaught; 
-        int m_TicksIngame; 
-        int m_Score;
-        int m_Fails;
-        int m_Shots;
-        void Reset()
-        {
-            m_Kills = 0;
-            m_Deaths = 0;
-            m_TicksCaught = 0; 
-            m_TicksIngame = 0; 
-            m_Score = 0;
-            m_Fails = 0;
-            m_Shots = 0;
-        }
-
-        CPlayerStats(int kills, int deaths, int ticksCaught, int ticksIngame, int score, int fails, int shots) :
-            m_Kills(kills), m_Deaths(deaths), m_TicksCaught(ticksCaught), m_TicksIngame(ticksIngame), m_Score(score), m_Fails(fails), m_Shots(shots)
-        {
-            // constructor
-        }
-    };
+{   
 
 private:
+    // redis server host & port
     std::string m_Host;
     size_t m_Port;
 
-    std::mutex m_ClientMutex;
+    // redis client
     cpp_redis::client m_Client;
+
+    std::vector<std::string> m_InvalidNicknames;
+    bool IsValidNickname(const std::string& nickname);
     
+    
+    // saving futures for later cleanup
     std::vector<std::future<void> > m_Futures;
 
+    std::mutex m_ReconnectHandlerMutex;
+    bool m_IsReconnectHandlerRunning;
+    int m_ReconnectIntervalMilliseconds;
+    void HandleReconnecting();
+    void StartReconnectHandler();
 
+    // when we get a disconnect, we safe out db changing actions in a backlog.
+    std::mutex m_BacklogMutex;
+    // action, nickname, stats data, prefix
+    std::vector<std::tuple<std::string, std::string, CPlayerStats, std::string> > m_Backlog;
+
+    // remove finished futures from vector
     void CleanFutures();
+
+    // wait for all futures to finish execution(used in destructor)
     void WaitFutures();
 
-    void UpdateRankingSync(std::string nickname,struct CPlayerStats stats, std::string prefix = "");
+    // retrieve player data syncronously
+    CPlayerStats GetRankingSync(std::string nickname, std::string prefix = "");
+
+    // synchronous execution of ranking update
+    void UpdateRankingSync(std::string nickname, CPlayerStats stats, std::string prefix = "");
+
+    // delete player's ranking
+    void DeleteRankingSync(std::string nickname, std::string prefix = "");
     
 public:
 
-    CRankingServer(std::string host, size_t port, uint32_t timeout = 0);
-    void UpdateRanking(std::string nickname,struct CPlayerStats stats, std::string prefix = "");
+    // constructor
+    CRankingServer(std::string host, size_t port, uint32_t timeout = 10000, uint32_t reconnect_ms = 5000);
 
+
+    // gets data and does stuff that's defined in callback with it.
+    // if no callback is provided, nothing is done.
+    void GetRanking(std::string nickname, std::function<void(CPlayerStats&)> calback = nullptr, std::string prefix = "");
+
+    // starts async execution of if nickname is valid
+    bool UpdateRanking(std::string nickname,  CPlayerStats stats, std::string prefix = "");
+
+
+    // if prefix is empty, the whole player is deleted.
+    void DeleteRanking(std::string nickname, std::string prefix = "");
+
+    // once in a while, the backlog can be cleaned
+    // from the main thread
+    void CleanupBacklog(std::string text = "");
 
     ~CRankingServer();
 };
