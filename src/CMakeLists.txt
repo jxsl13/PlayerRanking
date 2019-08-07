@@ -17,21 +17,7 @@ playerstats.cpp
 )
 
 
-###
-# includes
-###
-include_directories(
-    "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/cpp_redis/includes"
-    "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/cpp_redis/tacopie/includes"
-)
-
-###
-# libraries
-###
-link_directories(${DEPS_LIBRARIES})
-
-
-add_subdirectory(3rdparty/cpp_redis)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/cpp_redis)
 
 target_include_directories(cpp_redis PUBLIC 
     "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/cpp_redis/includes"

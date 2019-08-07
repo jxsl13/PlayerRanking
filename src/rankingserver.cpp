@@ -4,8 +4,15 @@
 #include <future>
 #include <iostream>
 
+CRankingServer::CRankingServer()
+{
+    m_DefaultConstructed = true;
+}
+
 CRankingServer::CRankingServer(std::string host, size_t port, uint32_t timeout, uint32_t reconnect_ms) : m_Host{host}, m_Port{port}
 {
+    m_DefaultConstructed = false;
+
     // all possible fields are invalid nicks
     CPlayerStats tmp;
     m_InvalidNicknames = tmp.keys();
@@ -19,14 +26,13 @@ CRankingServer::CRankingServer(std::string host, size_t port, uint32_t timeout, 
             // no reconnection handling necessary
             std::lock_guard<std::mutex> lock(m_ReconnectHandlerMutex);
             m_IsReconnectHandlerRunning = false;
-            std::cout << "[redis]: "
-                      << "successfully connected to " << m_Host << ":" << m_Port << std::endl;
+            std::cout << "[redis]: successfully connected to " << m_Host << ":" << m_Port << std::endl;
         }
     }
     catch (const cpp_redis::redis_error& e)
     {
-        std::cout << "[redis]: "
-                  << "failed to connect to " << m_Host << ":" << m_Port << std::endl;
+        std::cout << "[redis]: initial connection to " << m_Host << ":" << m_Port << " failed." << std::endl;
+
         StartReconnectHandler();
     }
 }
@@ -47,19 +53,18 @@ void CRankingServer::HandleReconnecting()
         // wait
         std::this_thread::sleep_for(std::chrono::milliseconds(m_ReconnectIntervalMilliseconds));
 
-        m_ReconnectHandlerMutex.lock();
+
+        std::lock_guard<std::mutex> lock(m_ReconnectHandlerMutex);
+        std::cout << "isreconnecthandlerrunning " << m_IsReconnectHandlerRunning << std::endl;
         if (!m_IsReconnectHandlerRunning)
         {
             std::cout << "[redis]: Shutting down reconnect handler.\n";
-            // forceful shutdown
-            m_ReconnectHandlerMutex.unlock();
 
             // forceful shutdown, is done, when the ranking server is
             // shutting down.
             CleanupBacklog();
             return;
         }
-        m_ReconnectHandlerMutex.unlock();
     }
 
     // connection established
@@ -73,12 +78,17 @@ void CRankingServer::HandleReconnecting()
 
 void CRankingServer::StartReconnectHandler()
 {
-    std::lock_guard<std::mutex> lock(m_ReconnectHandlerMutex);
+
     if (m_IsReconnectHandlerRunning)
         return; // already running
-
+    
+    std::lock_guard<std::mutex> lock(m_ReconnectHandlerMutex);
     m_IsReconnectHandlerRunning = true;
-    m_Futures.push_back(std::async(std::launch::async, &CRankingServer::HandleReconnecting, this));
+    
+    // this needs to be pushed to the front of all futures, as it needs to be handled
+    // last, as it might cause a deadlock
+    m_Futures.push_front(std::async(std::launch::async, &CRankingServer::HandleReconnecting, this));
+
 }
 
 bool CRankingServer::IsValidNickname(const std::string& nickname, const std::string& prefix)
@@ -150,16 +160,23 @@ CPlayerStats CRankingServer::GetRankingSync(std::string nickname, std::string pr
     }
     catch (const cpp_redis::redis_error& e)
     {
-        std::cout << "[redis]: lost connection: " << e.what() << std::endl;
+        
+        if (!m_Client.is_connected())
+        {
+            std::cout << "[redis]: lost connection: " << e.what() << std::endl;
+            StartReconnectHandler();
+        }
+
         stats.Invalidate();
-        StartReconnectHandler();
         return stats;
     }
 }
 
 void CRankingServer::GetRanking(std::string nickname, std::function<void(CPlayerStats&)> callback, std::string prefix)
 {
-    // fix disconnect state that might have occurred in the mean time
+    if (m_DefaultConstructed)
+        return;
+    
     CleanupFutures();
 
     if (callback)
@@ -175,6 +192,9 @@ void CRankingServer::GetRanking(std::string nickname, std::function<void(CPlayer
 
 void CRankingServer::GetTopRanking(int topNumber, std::string key, std::function<void(std::vector<std::pair<std::string, CPlayerStats> >&)> callback, std::string prefix, bool biggestFirst)
 {
+    if (m_DefaultConstructed)
+        return;
+    
     m_Futures.push_back(std::async(
         std::launch::async, [this](int topNum, std::string field, decltype(callback) cb, std::string pref, bool bigFirst) {
             std::vector<std::pair<std::string, CPlayerStats> > result = this->GetTopRankingSync(topNum, field, pref, bigFirst);
@@ -242,6 +262,7 @@ std::vector<std::pair<std::string, CPlayerStats> > CRankingServer::GetTopRanking
         }
         else
         {
+            
             throw cpp_redis::redis_error("exists: expected integer reply");
         }
     }
@@ -254,6 +275,9 @@ std::vector<std::pair<std::string, CPlayerStats> > CRankingServer::GetTopRanking
 
 void CRankingServer::DeleteRanking(std::string nickname, std::string prefix)
 {
+    if (m_DefaultConstructed)
+        return;
+    
     CleanupFutures();
 
     m_Futures.push_back(std::async(std::launch::async, &CRankingServer::DeleteRankingSync, this, nickname, prefix));
@@ -315,6 +339,9 @@ void CRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats stats,
 
 bool CRankingServer::UpdateRanking(std::string nickname, CPlayerStats stats, std::string prefix)
 {
+    if (m_DefaultConstructed)
+        return false;
+    
     CleanupFutures();
 
     if (!IsValidNickname(nickname, prefix))
@@ -477,10 +504,11 @@ void CRankingServer::DeleteRankingSync(std::string nickname, std::string prefix)
         if (!m_Client.is_connected())
         {
             std::cout << "[redis]: lost connection: " << e.what() << std::endl;
-            std::lock_guard<std::mutex> lock(m_BacklogMutex);
-            m_Backlog.push_back({"delete", nickname, CPlayerStats(), prefix});
             StartReconnectHandler();
         }
+
+        std::lock_guard<std::mutex> lock(m_BacklogMutex);
+        m_Backlog.push_back({"delete", nickname, CPlayerStats(), prefix});
     }
 }
 
@@ -570,6 +598,10 @@ CRankingServer::~CRankingServer()
 {
     // we still fail to reconnect at shutdown -> force shutdown
     m_ReconnectHandlerMutex.lock();
+    m_IsReconnectHandlerRunning = false;
+    m_ReconnectHandlerMutex.unlock();
+
+    std::cout << "shutting down reconnect handler" << std::endl;
     m_IsReconnectHandlerRunning = false;
     m_ReconnectHandlerMutex.unlock();
 

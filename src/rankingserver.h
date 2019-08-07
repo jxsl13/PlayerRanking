@@ -10,10 +10,14 @@
 #include <string>
 #include <tuple>
 #include <vector>
+#include <deque>
 
 class CRankingServer
 {
    private:
+
+    bool m_DefaultConstructed;
+
     // redis server host & port
     std::string m_Host;
     size_t m_Port;
@@ -25,13 +29,14 @@ class CRankingServer
     bool IsValidNickname(const std::string& nickname, const std::string& prefix = "");
 
     // saving futures for later cleanup
-    std::vector<std::future<void> > m_Futures;
+    std::deque<std::future<void> > m_Futures;
 
     // remove finished futures from vector
     void CleanupFutures();
 
     std::mutex m_ReconnectHandlerMutex;
     bool m_IsReconnectHandlerRunning;
+    
     int m_ReconnectIntervalMilliseconds;
     void HandleReconnecting();
     void StartReconnectHandler();
@@ -57,6 +62,11 @@ class CRankingServer
     std::vector<std::pair<std::string, CPlayerStats> > GetTopRankingSync(int topNumber, std::string key, std::string prefix = "", bool biggestFirst = true);
 
    public:
+
+    // default constructor - prevents the creation of a backlog(especially the allocation of RAM)
+    // an instance of this object does nothing, it's behaving like a dummy instance
+    CRankingServer();
+
     // constructor
     CRankingServer(std::string host, size_t port, uint32_t timeout = 10000, uint32_t reconnect_ms = 5000);
 
