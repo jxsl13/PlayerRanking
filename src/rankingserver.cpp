@@ -172,28 +172,29 @@ CPlayerStats CRankingServer::GetRankingSync(std::string nickname, std::string pr
     }
 }
 
-void CRankingServer::GetRanking(std::string nickname, std::function<void(CPlayerStats&)> callback, std::string prefix)
+bool CRankingServer::GetRanking(std::string nickname, std::function<void(CPlayerStats&)> callback, std::string prefix)
 {
-    if (m_DefaultConstructed)
-        return;
-    
     CleanupFutures();
 
-    if (callback)
-    {
-        m_Futures.push_back(std::async(
-            std::launch::async, [this](std::string nick, std::function<void(CPlayerStats&)> cb, std::string pref) {
-                CPlayerStats stats = this->GetRankingSync(nick, pref); // get data from server
-                cb(stats);                                             // call callback on data
-            },
-            nickname, callback, prefix));
-    }
+    if (m_DefaultConstructed || callback == nullptr || !IsValidNickname(nickname, prefix))
+        return false;
+
+    m_Futures.push_back(std::async(
+        std::launch::async, [this](std::string nick, std::function<void(CPlayerStats&)> cb, std::string pref) {
+            CPlayerStats stats = this->GetRankingSync(nick, pref); // get data from server
+            cb(stats);                                             // call callback on data
+        },
+        nickname, callback, prefix));
+    
+    return true;
 }
 
-void CRankingServer::GetTopRanking(int topNumber, std::string key, std::function<void(std::vector<std::pair<std::string, CPlayerStats> >&)> callback, std::string prefix, bool biggestFirst)
+bool CRankingServer::GetTopRanking(int topNumber, std::string key, std::function<void(std::vector<std::pair<std::string, CPlayerStats> >&)> callback, std::string prefix, bool biggestFirst)
 {
-    if (m_DefaultConstructed)
-        return;
+    CleanupFutures();
+
+    if (m_DefaultConstructed || callback == nullptr)
+        return false;
     
     m_Futures.push_back(std::async(
         std::launch::async, [this](int topNum, std::string field, decltype(callback) cb, std::string pref, bool bigFirst) {
@@ -201,6 +202,8 @@ void CRankingServer::GetTopRanking(int topNumber, std::string key, std::function
             cb(result);
         },
         topNumber, key, callback, prefix, biggestFirst));
+    
+    return true;
 }
 
 std::vector<std::pair<std::string, CPlayerStats> > CRankingServer::GetTopRankingSync(int topNumber, std::string key, std::string prefix, bool biggestFirst)
@@ -273,14 +276,15 @@ std::vector<std::pair<std::string, CPlayerStats> > CRankingServer::GetTopRanking
     }
 }
 
-void CRankingServer::DeleteRanking(std::string nickname, std::string prefix)
+bool CRankingServer::DeleteRanking(std::string nickname, std::string prefix)
 {
-    if (m_DefaultConstructed)
-        return;
-    
     CleanupFutures();
 
+    if (m_DefaultConstructed || !IsValidNickname(nickname, prefix))
+        return false;
+    
     m_Futures.push_back(std::async(std::launch::async, &CRankingServer::DeleteRankingSync, this, nickname, prefix));
+    return true;
 }
 
 void CRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats stats, std::string prefix)
@@ -339,17 +343,71 @@ void CRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats stats,
 
 bool CRankingServer::UpdateRanking(std::string nickname, CPlayerStats stats, std::string prefix)
 {
-    if (m_DefaultConstructed)
-        return false;
-    
     CleanupFutures();
 
-    if (!IsValidNickname(nickname, prefix))
+    if (m_DefaultConstructed || !IsValidNickname(nickname, prefix))
         return false;
 
     m_Futures.push_back(std::async(std::launch::async, &CRankingServer::UpdateRankingSync, this, nickname, stats, prefix));
 
     return true;
+}
+
+bool CRankingServer::SetRanking(std::string nickname, CPlayerStats stats, std::string prefix)
+{
+    CleanupFutures();
+
+    if (m_DefaultConstructed || !stats.IsValid() || !IsValidNickname(nickname, prefix))
+        return false;
+    
+    m_Futures.push_back(std::async(std::launch::async, &CRankingServer::SetRankingSync, this, nickname, stats, prefix));
+
+    return true;
+}
+
+void CRankingServer::SetRankingSync(std::string nickname, CPlayerStats stats, std::string prefix)
+{
+    try
+    {
+        std::future<cpp_redis::reply> setFuture = m_Client.hmset(nickname, stats.GetStringPairs(prefix));
+
+        // create/update index for every key
+        std::vector<std::string> options = {};
+        std::vector<std::future<cpp_redis::reply> > indexFutures;
+        for (auto& key : stats.keys())
+        {
+            indexFutures.push_back(
+                m_Client.zadd(prefix + key,
+                              options,
+                              {{std::to_string(stats[key]), nickname}}));
+        }
+
+        m_Client.sync_commit();
+        for (auto& f : indexFutures)
+        {
+            cpp_redis::reply r = f.get();
+            // retrieve results
+            // don't do anything with it.
+        }
+    }
+    catch (const cpp_redis::redis_error& e)
+    {
+        if (!m_Client.is_connected())
+        {
+            std::cout << "[redis]: lost connection: " << e.what() << std::endl;
+            StartReconnectHandler();
+            std::lock_guard<std::mutex> lock(m_BacklogMutex);
+            m_Backlog.push_back({"set", nickname, stats, prefix});
+        }
+        else
+        {
+            std::cout << "invalid nickname: " << nickname << std::endl;
+            // invalid player nick retrieved.
+            // don't do anything then.
+        }
+
+        return;
+    }
 }
 
 void CRankingServer::DeleteRankingSync(std::string nickname, std::string prefix)
@@ -522,6 +580,9 @@ void CRankingServer::CleanupBacklog()
         // for this mutex, until they add their failed information
         // back to the backlog.
 
+
+        // even tho the backlog might be filled again by these actions, it will be ignored
+        // when the ranking server is destroyed, as each element is beeing looked at once at most.
         int counter = 0;
         for (size_t i = 0; i < m_Backlog.size(); i++)
         {
@@ -538,6 +599,11 @@ void CRankingServer::CleanupBacklog()
                 DeleteRanking(nickname, prefix);
                 counter++;
             }
+            else if (action == "set")
+            {
+                SetRanking(nickname, stats, prefix);
+            }
+            
         }
 
         std::cout << "[redis]: Cleaned up " << counter << " backlog tasks." << std::endl;

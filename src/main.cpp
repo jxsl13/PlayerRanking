@@ -10,9 +10,9 @@ int main(int argc, const char* argv[])
     CPlayerStats tmp;
     auto keys = tmp.keys();
 
-    ranks.UpdateRanking("test0", {1, 2, 3, 4, 5, 6, 7});
-    ranks.UpdateRanking("test1", {2, 3, 4, 5, 6, 7, 8});
-    ranks.UpdateRanking("test2", {3, 4, 5, 6, 7, 8, 9});
+    ranks.SetRanking("test0", {1, 2, 3, 4, 5, 6, 7});
+    ranks.SetRanking("test1", {2, 3, 4, 5, 6, 7, 8});
+    ranks.SetRanking("test2", {3, 4, 5, 6, 7, 8, 9});
     ranks.UpdateRanking("test3", {4, 5, 6, 7, 8, 9, 10});
     ranks.UpdateRanking("test4", {5, 6, 7, 8, 9, 10, 11});
     ranks.UpdateRanking("test5", {6, 7, 8, 9, 10, 11, 1});
