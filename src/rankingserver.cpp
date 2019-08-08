@@ -668,10 +668,10 @@ CRankingServer::~CRankingServer()
     m_ReconnectHandlerMutex.unlock();
 
     std::cout << "shutting down reconnect handler" << std::endl;
-    m_IsReconnectHandlerRunning = false;
-    m_ReconnectHandlerMutex.unlock();
 
     AwaitFutures();
+
+    std::cout << "Successfully shut down reconnect handler." << std::endl;
 
     if (m_Client.is_connected())
     {
