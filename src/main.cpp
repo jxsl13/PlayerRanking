@@ -5,45 +5,46 @@ int main(int argc, const char* argv[])
 {
     std::string host{"127.0.0.1"};
     size_t port{6379};
-    CRankingServer ranks(host, port);
+    IRankingServer *pRanks = new CRedisRankingServer{host, port};
+
 
     CPlayerStats tmp;
     auto keys = tmp.keys();
 
-    ranks.SetRanking("test0", {1, 2, 3, 4, 5, 6, 7});
-    ranks.SetRanking("test1", {2, 3, 4, 5, 6, 7, 8});
-    ranks.SetRanking("test2", {3, 4, 5, 6, 7, 8, 9});
-    ranks.UpdateRanking("test3", {4, 5, 6, 7, 8, 9, 10});
-    ranks.UpdateRanking("test4", {5, 6, 7, 8, 9, 10, 11});
-    ranks.UpdateRanking("test5", {6, 7, 8, 9, 10, 11, 1});
-    ranks.UpdateRanking("test6", {7, 8, 9, 10, 11, 1, 2});
-    ranks.UpdateRanking("test7", {8, 9, 10, 11, 1, 2, 3});
-    ranks.UpdateRanking("test8", {9, 10, 11, 1, 2, 3, 4});
-    ranks.UpdateRanking("test9", {10, 11, 1, 2, 3, 4, 5});
-    ranks.UpdateRanking("test10", {11, 1, 2, 3, 4, 5, 6});
+    pRanks->SetRanking("test0", {1, 2, 3, 4, 5, 6, 7});
+    pRanks->SetRanking("test1", {2, 3, 4, 5, 6, 7, 8});
+    pRanks->SetRanking("test2", {3, 4, 5, 6, 7, 8, 9});
+    pRanks->UpdateRanking("test3", {4, 5, 6, 7, 8, 9, 10});
+    pRanks->UpdateRanking("test4", {5, 6, 7, 8, 9, 10, 11});
+    pRanks->UpdateRanking("test5", {6, 7, 8, 9, 10, 11, 1});
+    pRanks->UpdateRanking("test6", {7, 8, 9, 10, 11, 1, 2});
+    pRanks->UpdateRanking("test7", {8, 9, 10, 11, 1, 2, 3});
+    pRanks->UpdateRanking("test8", {9, 10, 11, 1, 2, 3, 4});
+    pRanks->UpdateRanking("test9", {10, 11, 1, 2, 3, 4, 5});
+    pRanks->UpdateRanking("test10", {11, 1, 2, 3, 4, 5, 6});
 
     std::string prefix{"Grenade_"};
 
-    ranks.UpdateRanking("g_test0", {1, 2, 3, 4, 5, 6, 7}, prefix);
-    ranks.UpdateRanking("g_test1", {2, 3, 4, 5, 6, 7, 8}, prefix);
-    ranks.UpdateRanking("g_test2", {3, 4, 5, 6, 7, 8, 9}, prefix);
-    ranks.UpdateRanking("g_test3", {4, 5, 6, 7, 8, 9, 10}, prefix);
-    ranks.UpdateRanking("g_test4", {5, 6, 7, 8, 9, 10, 11}, prefix);
-    ranks.UpdateRanking("g_test5", {6, 7, 8, 9, 10, 11, 1}, prefix);
-    ranks.UpdateRanking("g_test6", {7, 8, 9, 10, 11, 1, 2}, prefix);
-    ranks.UpdateRanking("g_test7", {8, 9, 10, 11, 1, 2, 3}, prefix);
-    ranks.UpdateRanking("g_test8", {9, 10, 11, 1, 2, 3, 4}, prefix);
-    ranks.UpdateRanking("g_test9", {10, 11, 1, 2, 3, 4, 5}, prefix);
-    ranks.UpdateRanking("g_test10", {11, 1, 2, 3, 4, 5, 6}, prefix);
+    pRanks->UpdateRanking("g_test0", {1, 2, 3, 4, 5, 6, 7}, prefix);
+    pRanks->UpdateRanking("g_test1", {2, 3, 4, 5, 6, 7, 8}, prefix);
+    pRanks->UpdateRanking("g_test2", {3, 4, 5, 6, 7, 8, 9}, prefix);
+    pRanks->UpdateRanking("g_test3", {4, 5, 6, 7, 8, 9, 10}, prefix);
+    pRanks->UpdateRanking("g_test4", {5, 6, 7, 8, 9, 10, 11}, prefix);
+    pRanks->UpdateRanking("g_test5", {6, 7, 8, 9, 10, 11, 1}, prefix);
+    pRanks->UpdateRanking("g_test6", {7, 8, 9, 10, 11, 1, 2}, prefix);
+    pRanks->UpdateRanking("g_test7", {8, 9, 10, 11, 1, 2, 3}, prefix);
+    pRanks->UpdateRanking("g_test8", {9, 10, 11, 1, 2, 3, 4}, prefix);
+    pRanks->UpdateRanking("g_test9", {10, 11, 1, 2, 3, 4, 5}, prefix);
+    pRanks->UpdateRanking("g_test10", {11, 1, 2, 3, 4, 5, 6}, prefix);
 
-    ranks.UpdateRanking("g_test00", {1, 1, 1, 1, 1, 1, 1}, prefix);
+    pRanks->UpdateRanking("g_test00", {1, 1, 1, 1, 1, 1, 1}, prefix);
 
     // enforce synchronization
-    ranks.AwaitFutures();
+    pRanks->AwaitFutures();
     for (size_t idx = 0; idx < keys.size(); idx++)
     {
         // show top 3 players per attribute
-        ranks.GetTopRanking(3, keys.at(idx), [&keys, idx](std::vector<std::pair<std::string, CPlayerStats> >& dataList) {
+        pRanks->GetTopRanking(3, keys.at(idx), [&keys, idx](std::vector<std::pair<std::string, CPlayerStats> >& dataList) {
             int rank = 1;
             for (auto& [nickname, stats] : dataList)
             {
@@ -51,11 +52,11 @@ int main(int argc, const char* argv[])
                 rank++;
             }
         }); // lambda end
-        ranks.AwaitFutures();
+        pRanks->AwaitFutures();
         std::cout << std::endl;
 
         // 4 instead of 3
-        ranks.GetTopRanking(4, keys.at(idx), [&keys, idx](std::vector<std::pair<std::string, CPlayerStats> >& dataList) {
+        pRanks->GetTopRanking(4, keys.at(idx), [&keys, idx](std::vector<std::pair<std::string, CPlayerStats> >& dataList) {
             int rank = 1;
             for (auto& [nickname, stats] : dataList)
             {
@@ -63,38 +64,38 @@ int main(int argc, const char* argv[])
                 rank++;
             }
         }, prefix); // lambda end, prefix added
-        ranks.AwaitFutures();
+        pRanks->AwaitFutures();
         std::cout << std::endl;
     }
 
     std::string nickname{"test0"};
-    ranks.GetRanking(nickname, [nickname](CPlayerStats& stats)
+    pRanks->GetRanking(nickname, [nickname](CPlayerStats& stats)
     {
         std::cout << nickname << " : " << stats << std::endl;
         std::cout << "is valid: " << (stats.IsValid() ? "valid" : "invalid") << std::endl;
     }); // no prefix needed, as this entry was not created with one.
 
-    ranks.AwaitFutures();
+    pRanks->AwaitFutures();
 
 
     nickname = "g_test00";
     std::cout << "explicitly set prefix:" << std::endl;
-    ranks.GetRanking(nickname, [nickname](CPlayerStats& stats)
+    pRanks->GetRanking(nickname, [nickname](CPlayerStats& stats)
     {
         std::cout << nickname << " : " << stats << std::endl;
         std::cout << "is valid: " << (stats.IsValid() ? "valid" : "invalid") << std::endl;
     }, prefix); // explicitly set prefix!
 
-    ranks.AwaitFutures();
+    pRanks->AwaitFutures();
 
     std::cout << "" << std::endl;
-    ranks.GetRanking(nickname, [nickname](CPlayerStats& stats)
+    pRanks->GetRanking(nickname, [nickname](CPlayerStats& stats)
     {
         std::cout << nickname << " : " << stats << std::endl;
         std::cout << "is valid: " << (stats.IsValid() ? "valid" : "invalid") << std::endl;
     }); // without prefix this will result in an invalid/ empty type
 
-    ranks.AwaitFutures();
+    pRanks->AwaitFutures();
 
 
     
@@ -111,12 +112,12 @@ int main(int argc, const char* argv[])
     for (auto &nickname : nicknames)
     {
         std::cout << "deleting: " << nickname << std::endl; 
-        ranks.DeleteRanking(nickname);
-        ranks.AwaitFutures();
+        pRanks->DeleteRanking(nickname);
+        pRanks->AwaitFutures();
     }
 
 
 
-
+    delete pRanks;
     return 0;
 }

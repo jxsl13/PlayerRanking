@@ -4,18 +4,207 @@
 #include <future>
 #include <iostream>
 
-CRankingServer::CRankingServer()
+IRankingServer::IRankingServer()
+{
+    // all possible fields are invalid nicks
+    CPlayerStats tmp;
+    m_InvalidNicknames = tmp.keys();
+}
+
+IRankingServer::~IRankingServer()
+{
+    // in any case, await futures, if the derived class does not do this.
+    AwaitFutures(); 
+}
+
+bool IRankingServer::IsValidNickname(const std::string& nickname, const std::string& prefix)
+{
+    if (nickname.size() == 0)
+        return false; // empty string nick -> no rankings for you
+    else if (m_InvalidNicknames.size() == 0)
+        return true; // no invalid nicks -> your nick is valid
+
+    for (auto& name : m_InvalidNicknames)
+    {
+        if (nickname == name)
+            return false;
+        else if (nickname == (prefix + name))
+            return false;
+    }
+    return true;
+}
+
+bool IRankingServer::GetRanking(std::string nickname, IRankingServer::cb_stats_t callback, std::string prefix)
+{
+    CleanupFutures();
+
+    if (m_DefaultConstructed || callback == nullptr || !IsValidNickname(nickname, prefix))
+        return false;
+
+    m_Futures.push_back(std::async(
+        std::launch::async, [this](std::string nick, std::function<void(CPlayerStats&)> cb, std::string pref) {
+            CPlayerStats stats = this->GetRankingSync(nick, pref); // get data from server
+            cb(stats);                                             // call callback on data
+        },
+        nickname, callback, prefix));
+    
+    return true;
+}
+
+bool IRankingServer::DeleteRanking(std::string nickname, std::string prefix)
+{
+    CleanupFutures();
+
+    if (m_DefaultConstructed || !IsValidNickname(nickname, prefix))
+        return false;
+    
+    m_Futures.push_back(std::async(std::launch::async, &IRankingServer::DeleteRankingSync, this, nickname, prefix));
+    return true;
+}
+
+bool IRankingServer::GetTopRanking(int topNumber, std::string key, IRankingServer::cb_key_stats_vec_t callback, std::string prefix, bool biggestFirst)
+{
+    CleanupFutures();
+
+    if (m_DefaultConstructed || callback == nullptr)
+        return false;
+    
+    m_Futures.push_back(std::async(
+        std::launch::async, [this](int topNum, std::string field, decltype(callback) cb, std::string pref, bool bigFirst) {
+            std::vector<std::pair<std::string, CPlayerStats> > result = this->GetTopRankingSync(topNum, field, pref, bigFirst);
+            cb(result);
+        },
+        topNumber, key, callback, prefix, biggestFirst));
+    
+    return true;
+}
+
+bool IRankingServer::UpdateRanking(std::string nickname, CPlayerStats stats, std::string prefix)
+{
+    CleanupFutures();
+
+    if (m_DefaultConstructed || !IsValidNickname(nickname, prefix))
+        return false;
+
+    m_Futures.push_back(std::async(std::launch::async, &IRankingServer::UpdateRankingSync, this, nickname, stats, prefix));
+
+    return true;
+}
+
+bool IRankingServer::SetRanking(std::string nickname, CPlayerStats stats, std::string prefix)
+{
+    CleanupFutures();
+
+    if (m_DefaultConstructed || !stats.IsValid() || !IsValidNickname(nickname, prefix))
+        return false;
+    
+    m_Futures.push_back(std::async(std::launch::async, &IRankingServer::SetRankingSync, this, nickname, stats, prefix));
+
+    return true;
+}
+
+void IRankingServer::CleanupBacklog()
+{
+    std::lock_guard<std::mutex> lock(m_BacklogMutex);
+    if (m_Backlog.size() > 0)
+    {
+        // we start new threads from here.
+        // if those threads fail, they will keep on waiting
+        // for this mutex, until they add their failed information
+        // back to the backlog.
+
+
+        // even tho the backlog might be filled again by these actions, it will be ignored
+        // when the ranking server is destroyed, as each element is beeing looked at once at most.
+        int counter = 0;
+        for (size_t i = 0; i < m_Backlog.size(); i++)
+        {
+            auto [action, nickname, stats, prefix] = m_Backlog.back();
+            m_Backlog.pop_back();
+
+            if (action == "update")
+            {
+                UpdateRanking(nickname, stats, prefix);
+                counter++;
+            }
+            else if (action == "delete")
+            {
+                DeleteRanking(nickname, prefix);
+                counter++;
+            }
+            else if (action == "set")
+            {
+                SetRanking(nickname, stats, prefix);
+            }
+            
+        }
+
+        std::cout << "[ranking]: Cleaned up " << counter << " backlog tasks." << std::endl;
+    }
+    else
+    {
+        // backlog empty
+    }
+}
+
+void IRankingServer::CleanupFutures()
+{
+    if (m_Futures.size() == 0)
+        return;
+
+    auto it = std::remove_if(m_Futures.begin(), m_Futures.end(), [&](std::future<void>& f) {
+        if (!f.valid())
+            return true;
+
+        if (std::future_status::ready == f.wait_for(std::chrono::milliseconds(0)))
+        {
+            try
+            {
+                f.get();
+            }
+            catch (const std::exception& e)
+            {
+                std::cerr << e.what() << '\n';
+            }
+
+            return true;
+        }
+        return false;
+    });
+    m_Futures.erase(it, m_Futures.end());
+}
+
+void IRankingServer::AwaitFutures()
+{
+    for (auto& f : m_Futures)
+    {
+        if (f.valid())
+        {
+            f.wait();
+            try
+            {
+                f.get();
+            }
+            catch (const std::exception& e)
+            {
+                std::cerr << e.what() << '\n';
+            }
+        }
+    }
+
+    m_Futures.clear();
+}
+
+// ############################################################
+
+CRedisRankingServer::CRedisRankingServer()
 {
     m_DefaultConstructed = true;
 }
 
-CRankingServer::CRankingServer(std::string host, size_t port, uint32_t timeout, uint32_t reconnect_ms) : m_Host{host}, m_Port{port}
+CRedisRankingServer::CRedisRankingServer(std::string host, size_t port, uint32_t timeout, uint32_t reconnect_ms) : m_Host{host}, m_Port{port}
 {
     m_DefaultConstructed = false;
-
-    // all possible fields are invalid nicks
-    CPlayerStats tmp;
-    m_InvalidNicknames = tmp.keys();
 
     m_ReconnectIntervalMilliseconds = reconnect_ms;
     try
@@ -37,7 +226,7 @@ CRankingServer::CRankingServer(std::string host, size_t port, uint32_t timeout, 
     }
 }
 
-void CRankingServer::HandleReconnecting()
+void CRedisRankingServer::HandleReconnecting()
 {
     while (!m_Client.is_connected())
     {
@@ -76,7 +265,7 @@ void CRankingServer::HandleReconnecting()
     CleanupBacklog();
 }
 
-void CRankingServer::StartReconnectHandler()
+void CRedisRankingServer::StartReconnectHandler()
 {
 
     if (m_IsReconnectHandlerRunning)
@@ -87,28 +276,11 @@ void CRankingServer::StartReconnectHandler()
     
     // this needs to be pushed to the front of all futures, as it needs to be handled
     // last, as it might cause a deadlock
-    m_Futures.push_front(std::async(std::launch::async, &CRankingServer::HandleReconnecting, this));
+    m_Futures.push_front(std::async(std::launch::async, &CRedisRankingServer::HandleReconnecting, this));
 
 }
 
-bool CRankingServer::IsValidNickname(const std::string& nickname, const std::string& prefix)
-{
-    if (nickname.size() == 0)
-        return false; // empty string nick -> no rankings for you
-    else if (m_InvalidNicknames.size() == 0)
-        return true; // no invalid nicks -> your nick is valid
-
-    for (auto name : m_InvalidNicknames)
-    {
-        if (nickname == name)
-            return false;
-        else if (nickname == (prefix + name))
-            return false;
-    }
-    return true;
-}
-
-CPlayerStats CRankingServer::GetRankingSync(std::string nickname, std::string prefix)
+CPlayerStats CRedisRankingServer::GetRankingSync(std::string nickname, std::string prefix)
 {
     CPlayerStats stats;
 
@@ -172,41 +344,7 @@ CPlayerStats CRankingServer::GetRankingSync(std::string nickname, std::string pr
     }
 }
 
-bool CRankingServer::GetRanking(std::string nickname, std::function<void(CPlayerStats&)> callback, std::string prefix)
-{
-    CleanupFutures();
-
-    if (m_DefaultConstructed || callback == nullptr || !IsValidNickname(nickname, prefix))
-        return false;
-
-    m_Futures.push_back(std::async(
-        std::launch::async, [this](std::string nick, std::function<void(CPlayerStats&)> cb, std::string pref) {
-            CPlayerStats stats = this->GetRankingSync(nick, pref); // get data from server
-            cb(stats);                                             // call callback on data
-        },
-        nickname, callback, prefix));
-    
-    return true;
-}
-
-bool CRankingServer::GetTopRanking(int topNumber, std::string key, std::function<void(std::vector<std::pair<std::string, CPlayerStats> >&)> callback, std::string prefix, bool biggestFirst)
-{
-    CleanupFutures();
-
-    if (m_DefaultConstructed || callback == nullptr)
-        return false;
-    
-    m_Futures.push_back(std::async(
-        std::launch::async, [this](int topNum, std::string field, decltype(callback) cb, std::string pref, bool bigFirst) {
-            std::vector<std::pair<std::string, CPlayerStats> > result = this->GetTopRankingSync(topNum, field, pref, bigFirst);
-            cb(result);
-        },
-        topNumber, key, callback, prefix, biggestFirst));
-    
-    return true;
-}
-
-std::vector<std::pair<std::string, CPlayerStats> > CRankingServer::GetTopRankingSync(int topNumber, std::string key, std::string prefix, bool biggestFirst)
+IRankingServer::key_stats_vec_t CRedisRankingServer::GetTopRankingSync(int topNumber, std::string key, std::string prefix, bool biggestFirst)
 {
     std::string index = prefix + key;
 
@@ -276,18 +414,7 @@ std::vector<std::pair<std::string, CPlayerStats> > CRankingServer::GetTopRanking
     }
 }
 
-bool CRankingServer::DeleteRanking(std::string nickname, std::string prefix)
-{
-    CleanupFutures();
-
-    if (m_DefaultConstructed || !IsValidNickname(nickname, prefix))
-        return false;
-    
-    m_Futures.push_back(std::async(std::launch::async, &CRankingServer::DeleteRankingSync, this, nickname, prefix));
-    return true;
-}
-
-void CRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats stats, std::string prefix)
+void CRedisRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats stats, std::string prefix)
 {
     try
     {
@@ -341,31 +468,7 @@ void CRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats stats,
     }
 }
 
-bool CRankingServer::UpdateRanking(std::string nickname, CPlayerStats stats, std::string prefix)
-{
-    CleanupFutures();
-
-    if (m_DefaultConstructed || !IsValidNickname(nickname, prefix))
-        return false;
-
-    m_Futures.push_back(std::async(std::launch::async, &CRankingServer::UpdateRankingSync, this, nickname, stats, prefix));
-
-    return true;
-}
-
-bool CRankingServer::SetRanking(std::string nickname, CPlayerStats stats, std::string prefix)
-{
-    CleanupFutures();
-
-    if (m_DefaultConstructed || !stats.IsValid() || !IsValidNickname(nickname, prefix))
-        return false;
-    
-    m_Futures.push_back(std::async(std::launch::async, &CRankingServer::SetRankingSync, this, nickname, stats, prefix));
-
-    return true;
-}
-
-void CRankingServer::SetRankingSync(std::string nickname, CPlayerStats stats, std::string prefix)
+void CRedisRankingServer::SetRankingSync(std::string nickname, CPlayerStats stats, std::string prefix)
 {
     try
     {
@@ -410,7 +513,7 @@ void CRankingServer::SetRankingSync(std::string nickname, CPlayerStats stats, st
     }
 }
 
-void CRankingServer::DeleteRankingSync(std::string nickname, std::string prefix)
+void CRedisRankingServer::DeleteRankingSync(std::string nickname, std::string prefix)
 {
     try
     {
@@ -570,108 +673,17 @@ void CRankingServer::DeleteRankingSync(std::string nickname, std::string prefix)
     }
 }
 
-void CRankingServer::CleanupBacklog()
-{
-    std::lock_guard<std::mutex> lock(m_BacklogMutex);
-    if (m_Backlog.size() > 0)
-    {
-        // we start new threads from here.
-        // if those threads fail, they will keep on waiting
-        // for this mutex, until they add their failed information
-        // back to the backlog.
-
-
-        // even tho the backlog might be filled again by these actions, it will be ignored
-        // when the ranking server is destroyed, as each element is beeing looked at once at most.
-        int counter = 0;
-        for (size_t i = 0; i < m_Backlog.size(); i++)
-        {
-            auto [action, nickname, stats, prefix] = m_Backlog.back();
-            m_Backlog.pop_back();
-
-            if (action == "update")
-            {
-                UpdateRanking(nickname, stats, prefix);
-                counter++;
-            }
-            else if (action == "delete")
-            {
-                DeleteRanking(nickname, prefix);
-                counter++;
-            }
-            else if (action == "set")
-            {
-                SetRanking(nickname, stats, prefix);
-            }
-            
-        }
-
-        std::cout << "[redis]: Cleaned up " << counter << " backlog tasks." << std::endl;
-    }
-    else
-    {
-        // backlog empty
-    }
-}
-
-void CRankingServer::CleanupFutures()
-{
-    if (m_Futures.size() == 0)
-        return;
-
-    auto it = std::remove_if(m_Futures.begin(), m_Futures.end(), [&](std::future<void>& f) {
-        if (!f.valid())
-            return true;
-
-        if (std::future_status::ready == f.wait_for(std::chrono::milliseconds(0)))
-        {
-            try
-            {
-                f.get();
-            }
-            catch (const std::exception& e)
-            {
-                std::cerr << e.what() << '\n';
-            }
-
-            return true;
-        }
-        return false;
-    });
-    m_Futures.erase(it, m_Futures.end());
-}
-
-void CRankingServer::AwaitFutures()
-{
-    for (auto& f : m_Futures)
-    {
-        if (f.valid())
-        {
-            f.wait();
-            try
-            {
-                f.get();
-            }
-            catch (const cpp_redis::redis_error& e)
-            {
-                std::cerr << e.what() << '\n';
-            }
-        }
-    }
-}
-
-CRankingServer::~CRankingServer()
+CRedisRankingServer::~CRedisRankingServer()
 {
     // we still fail to reconnect at shutdown -> force shutdown
     m_ReconnectHandlerMutex.lock();
     m_IsReconnectHandlerRunning = false;
     m_ReconnectHandlerMutex.unlock();
 
-    std::cout << "shutting down reconnect handler" << std::endl;
-
+    // we need to wait for out futures to finish, before
+    // we can disconnect from the server.
     AwaitFutures();
 
-    std::cout << "Successfully shut down reconnect handler." << std::endl;
 
     if (m_Client.is_connected())
     {
