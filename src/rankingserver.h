@@ -4,6 +4,7 @@
 #include "playerstats.h"
 
 #include <cpp_redis/cpp_redis>
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <functional>
 #include <future>
 #include <mutex>
@@ -58,7 +59,7 @@ class IRankingServer
     // ############################################################################################################
     // Interface that needs to be implemented
 
-    // retrieve player data syncronously
+    // retrieve player data syncronously - throws exception on error, retuns invalid object if not found
     virtual CPlayerStats GetRankingSync(std::string nickname, std::string prefix) = 0;
 
     // set specific values synchronously
@@ -172,9 +173,24 @@ class CSQLiteRankingServer : public IRankingServer
 
 
     std::mutex m_DatabaseMutex;
+    SQLite::Database *m_pDatabase;
+
+    std::mutex m_ValidPrefixListMutex;
+    std::vector<std::string> m_ValidPrefixList;
+
+    // table base name, that's added after the table prefix
+    const std::string m_BaseTableName{"Ranking"};
+
+    // ranking order is based on this key.
+    const std::string m_RankingKey{"Score"};
+
+    const bool m_BiggestFirst{true};
+
+    bool IsValidPrefix(const std::string& prefix);
+    void FixPrefix(std::string& prefix);
 
    protected:
-     // retrieve player data syncronously
+    // retrieve player data syncronously
     virtual CPlayerStats GetRankingSync(std::string nickname, std::string prefix = "");
 
     // set specific values
@@ -192,7 +208,7 @@ class CSQLiteRankingServer : public IRankingServer
    public:
 
     CSQLiteRankingServer();
-    CSQLiteRankingServer(std::string filePath);
+    CSQLiteRankingServer(std::string filePath, std::vector<std::string> validPrefixList = {{""}}, int busyTimeoutMs = 10000);
     ~CSQLiteRankingServer();
 };
 

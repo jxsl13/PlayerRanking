@@ -14,7 +14,7 @@ IRankingServer::IRankingServer()
 IRankingServer::~IRankingServer()
 {
     // in any case, await futures, if the derived class does not do this.
-    AwaitFutures(); 
+    AwaitFutures();
 }
 
 bool IRankingServer::IsValidNickname(const std::string& nickname, const std::string& prefix)
@@ -43,11 +43,26 @@ bool IRankingServer::GetRanking(std::string nickname, IRankingServer::cb_stats_t
 
     m_Futures.push_back(std::async(
         std::launch::async, [this](std::string nick, std::function<void(CPlayerStats&)> cb, std::string pref) {
-            CPlayerStats stats = this->GetRankingSync(nick, pref); // get data from server
-            cb(stats);                                             // call callback on data
+            CPlayerStats stats;
+            try
+            {
+                stats = this->GetRankingSync(nick, pref); // get data from server
+            }
+            catch (const std::exception& e)
+            {
+                // if some unexpected error happened in GetRankingSync
+                std::cout << "[IRanking] Failed to retrieve Ranking." << std::endl;
+
+                // if retrieving fails, nothing is donw.
+                return;
+            }
+
+            // calling callback
+            // this should not hrow anything.
+            cb(stats); // call callback on data
         },
         nickname, callback, prefix));
-    
+
     return true;
 }
 
@@ -57,8 +72,24 @@ bool IRankingServer::DeleteRanking(std::string nickname, std::string prefix)
 
     if (m_DefaultConstructed || !IsValidNickname(nickname, prefix))
         return false;
-    
-    m_Futures.push_back(std::async(std::launch::async, &IRankingServer::DeleteRankingSync, this, nickname, prefix));
+
+    m_Futures.push_back(
+        std::async(
+            std::launch::async,
+            [this](std::string nick, std::string pref) {
+                try
+                {
+                    this->DeleteRankingSync(nick, pref);
+                }
+                catch (std::exception& e)
+                {
+                    // failed to delete ranking
+                    // adding to backlog
+                    std::lock_guard<std::mutex> lock(m_BacklogMutex);
+                    m_Backlog.push_back({"delete", nick, CPlayerStats(), pref});
+                }
+            },
+            nickname, prefix));
     return true;
 }
 
@@ -69,13 +100,27 @@ bool IRankingServer::GetTopRanking(int topNumber, std::string key, IRankingServe
     if (m_DefaultConstructed || callback == nullptr)
         return false;
     
+
     m_Futures.push_back(std::async(
-        std::launch::async, [this](int topNum, std::string field, decltype(callback) cb, std::string pref, bool bigFirst) {
-            std::vector<std::pair<std::string, CPlayerStats> > result = this->GetTopRankingSync(topNum, field, pref, bigFirst);
+        std::launch::async,
+        [this](int topNum, std::string field, decltype(callback) cb, std::string pref, bool bigFirst) {
+            std::vector<std::pair<std::string, CPlayerStats> > result;
+
+            try
+            {
+                result = this->GetTopRankingSync(topNum, field, pref, bigFirst);
+            }
+            catch (const std::exception& e)
+            {
+                std::cout << "[IRankingServer] " << e.what() << '\n';
+                return;
+            }
+
+            // if no error occurrs, call callback on the result.
             cb(result);
         },
         topNumber, key, callback, prefix, biggestFirst));
-    
+
     return true;
 }
 
@@ -86,7 +131,23 @@ bool IRankingServer::UpdateRanking(std::string nickname, CPlayerStats stats, std
     if (m_DefaultConstructed || !IsValidNickname(nickname, prefix))
         return false;
 
-    m_Futures.push_back(std::async(std::launch::async, &IRankingServer::UpdateRankingSync, this, nickname, stats, prefix));
+    m_Futures.push_back(std::async(
+        std::launch::async,
+        [this](std::string nick, CPlayerStats stat, std::string pref) {
+            try
+            {
+                // if this somehow fails and throws an error, handle backlogging
+                this->UpdateRankingSync(nick, stat, pref);
+            }
+            catch (const std::exception& e)
+            {
+                std::cout << "[IRankingServer] " << e.what() << '\n';
+
+                std::lock_guard<std::mutex> lock(m_BacklogMutex);
+                m_Backlog.push_back({"update", nick, stat, pref});
+            }
+        },
+        nickname, stats, prefix));
 
     return true;
 }
@@ -97,8 +158,24 @@ bool IRankingServer::SetRanking(std::string nickname, CPlayerStats stats, std::s
 
     if (m_DefaultConstructed || !stats.IsValid() || !IsValidNickname(nickname, prefix))
         return false;
-    
-    m_Futures.push_back(std::async(std::launch::async, &IRankingServer::SetRankingSync, this, nickname, stats, prefix));
+
+    m_Futures.push_back(std::async(
+        std::launch::async,
+        [this](std::string nick, CPlayerStats stat, std::string pref) {
+            try
+            {
+                // if this fails, we add this pending action to our backlog.
+                this->SetRankingSync(nick, stat, pref);
+            }
+            catch (const std::exception& e)
+            {
+                std::cout << "[IRankingServer] " << e.what() << '\n';
+
+                std::lock_guard<std::mutex> lock(m_BacklogMutex);
+                m_Backlog.push_back({"set", nick, stat, pref});
+            }
+        },
+        nickname, stats, prefix));
 
     return true;
 }
@@ -112,7 +189,6 @@ void IRankingServer::CleanupBacklog()
         // if those threads fail, they will keep on waiting
         // for this mutex, until they add their failed information
         // back to the backlog.
-
 
         // even tho the backlog might be filled again by these actions, it will be ignored
         // when the ranking server is destroyed, as each element is beeing looked at once at most.
@@ -136,7 +212,6 @@ void IRankingServer::CleanupBacklog()
             {
                 SetRanking(nickname, stats, prefix);
             }
-            
         }
 
         std::cout << "[ranking]: Cleaned up " << counter << " backlog tasks." << std::endl;
@@ -226,6 +301,24 @@ CRedisRankingServer::CRedisRankingServer(std::string host, size_t port, uint32_t
     }
 }
 
+CRedisRankingServer::~CRedisRankingServer()
+{
+    // we still fail to reconnect at shutdown -> force shutdown
+    m_ReconnectHandlerMutex.lock();
+    m_IsReconnectHandlerRunning = false;
+    m_ReconnectHandlerMutex.unlock();
+
+    // we need to wait for out futures to finish, before
+    // we can disconnect from the server.
+    AwaitFutures();
+
+    if (m_Client.is_connected())
+    {
+        m_Client.disconnect(true);
+        std::cout << "[redis]: disconnected from database" << std::endl;
+    }
+}
+
 void CRedisRankingServer::HandleReconnecting()
 {
     while (!m_Client.is_connected())
@@ -241,7 +334,6 @@ void CRedisRankingServer::HandleReconnecting()
 
         // wait
         std::this_thread::sleep_for(std::chrono::milliseconds(m_ReconnectIntervalMilliseconds));
-
 
         std::lock_guard<std::mutex> lock(m_ReconnectHandlerMutex);
         std::cout << "isreconnecthandlerrunning " << m_IsReconnectHandlerRunning << std::endl;
@@ -267,17 +359,15 @@ void CRedisRankingServer::HandleReconnecting()
 
 void CRedisRankingServer::StartReconnectHandler()
 {
-
     if (m_IsReconnectHandlerRunning)
         return; // already running
-    
+
     std::lock_guard<std::mutex> lock(m_ReconnectHandlerMutex);
     m_IsReconnectHandlerRunning = true;
-    
+
     // this needs to be pushed to the front of all futures, as it needs to be handled
     // last, as it might cause a deadlock
     m_Futures.push_front(std::async(std::launch::async, &CRedisRankingServer::HandleReconnecting, this));
-
 }
 
 CPlayerStats CRedisRankingServer::GetRankingSync(std::string nickname, std::string prefix)
@@ -332,15 +422,13 @@ CPlayerStats CRedisRankingServer::GetRankingSync(std::string nickname, std::stri
     }
     catch (const cpp_redis::redis_error& e)
     {
-        
         if (!m_Client.is_connected())
         {
             std::cout << "[redis]: lost connection: " << e.what() << std::endl;
             StartReconnectHandler();
         }
 
-        stats.Invalidate();
-        return stats;
+        throw;
     }
 }
 
@@ -403,14 +491,13 @@ IRankingServer::key_stats_vec_t CRedisRankingServer::GetTopRankingSync(int topNu
         }
         else
         {
-            
             throw cpp_redis::redis_error("exists: expected integer reply");
         }
     }
     catch (const cpp_redis::redis_error& e)
     {
-        std::cerr << e.what() << '\n';
-        return {};
+        // error is propagated to calling function.
+        throw;
     }
 }
 
@@ -454,8 +541,7 @@ void CRedisRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats s
         {
             std::cout << "[redis]: lost connection: " << e.what() << std::endl;
             StartReconnectHandler();
-            std::lock_guard<std::mutex> lock(m_BacklogMutex);
-            m_Backlog.push_back({"update", nickname, stats, prefix});
+            throw;
         }
         else
         {
@@ -499,8 +585,9 @@ void CRedisRankingServer::SetRankingSync(std::string nickname, CPlayerStats stat
         {
             std::cout << "[redis]: lost connection: " << e.what() << std::endl;
             StartReconnectHandler();
-            std::lock_guard<std::mutex> lock(m_BacklogMutex);
-            m_Backlog.push_back({"set", nickname, stats, prefix});
+
+            // rethrow in order to handle backlog stuff.
+            throw;
         }
         else
         {
@@ -661,33 +748,533 @@ void CRedisRankingServer::DeleteRankingSync(std::string nickname, std::string pr
     }
     catch (const cpp_redis::redis_error& e)
     {
-        // connection lost -> push tast into backlog
         if (!m_Client.is_connected())
         {
             std::cout << "[redis]: lost connection: " << e.what() << std::endl;
             StartReconnectHandler();
+            throw;
         }
-
-        std::lock_guard<std::mutex> lock(m_BacklogMutex);
-        m_Backlog.push_back({"delete", nickname, CPlayerStats(), prefix});
+        else
+        {
+            std::cout << "[redis] unexpected error while trying to delete an entry: " << e.what() << std::endl;
+        }
+        return;
     }
 }
 
-CRedisRankingServer::~CRedisRankingServer()
+CSQLiteRankingServer::CSQLiteRankingServer()
 {
-    // we still fail to reconnect at shutdown -> force shutdown
-    m_ReconnectHandlerMutex.lock();
-    m_IsReconnectHandlerRunning = false;
-    m_ReconnectHandlerMutex.unlock();
+    m_DefaultConstructed = true;
+    m_pDatabase = nullptr;
+}
 
-    // we need to wait for out futures to finish, before
-    // we can disconnect from the server.
+void CSQLiteRankingServer::FixPrefix(std::string& prefix)
+{
+    // replace whitespace with underscore
+    std::transform(prefix.begin(), prefix.end(), prefix.begin(), [](unsigned char ch) {
+        return std::isspace(static_cast<unsigned char>(ch)) ? '_' : ch;
+    });
+
+    // prefix must not start with an intger, cuz it's an invalid table name then
+    if (prefix.size() > 0 && std::isdigit(prefix[0]))
+    {
+        prefix = std::string("_") + prefix;
+    }
+}
+
+CSQLiteRankingServer::CSQLiteRankingServer(std::string filePath, std::vector<std::string> validPrefixList, int busyTimeoutMs)
+{
+    // needed to get keys in order to create table columns
+    CPlayerStats stats;
+
+    m_DefaultConstructed = false;
+    m_pDatabase = nullptr;
+
+    m_ValidPrefixListMutex.lock();
+    m_ValidPrefixList.reserve(validPrefixList.size());
+
+    for (auto& prefix : validPrefixList)
+    {
+        FixPrefix(prefix);
+
+        m_ValidPrefixList.push_back(prefix);
+    }
+    m_ValidPrefixListMutex.unlock();
+
+    std::vector<std::string> Columns = stats.keys();
+    size_t ColumnsSize = Columns.size();
+
+    // used to consruct creation query
+    std::stringstream ss;
+
+    for (auto& p : m_ValidPrefixList)
+    {
+        // create table for every prefix
+        std::string TableName = p + m_BaseTableName;
+
+        ss << "CREATE TABLE IF NOT EXISTS " << TableName << "  ( ";
+        ss << "Key TEXT PRIMARY KEY ASC,\n";
+
+        for (size_t i = 0; i < ColumnsSize; i++)
+        {
+            ss << " " << Columns[i] << " UNSIGNED INTEGER DEFAULT 0";
+
+            if (i < ColumnsSize - 1)
+                ss << " ,\n";
+        }
+        ss << " );\n";
+
+        // create indices
+        for (size_t i = 0; i < ColumnsSize; i++)
+        {
+            ss << "CREATE INDEX IF NOT EXISTS " << TableName << "_" << Columns[i] << "_index ON " << TableName << " (" << Columns[i] << ");\n";
+        }
+    }
+
+    std::cout << ss.str() << std::endl;
+
+    try
+    {
+        m_FilePath = filePath;
+        m_pDatabase = new SQLite::Database(m_FilePath, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+        m_pDatabase->setBusyTimeout(busyTimeoutMs);
+        m_pDatabase->exec(ss.str());
+
+        std::cout << "[SQLite]: Successfully created database: '" << m_FilePath << "'" << std::endl;
+    }
+    catch (const std::exception& e)
+    {
+        std::cout << "[SQLite] failed to create a database: " << e.what() << '\n';
+
+        // got an error opening db
+        // no sense in trying again
+        m_DefaultConstructed = true;
+
+        if (m_pDatabase)
+        {
+            delete m_pDatabase;
+            m_pDatabase = nullptr;
+        }
+    }
+}
+
+CSQLiteRankingServer::~CSQLiteRankingServer()
+{
     AwaitFutures();
 
+    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
 
-    if (m_Client.is_connected())
+    if (m_pDatabase)
     {
-        m_Client.disconnect(true);
-        std::cout << "[redis]: disconnected from database" << std::endl;
+        delete m_pDatabase;
+        m_pDatabase = nullptr;
+    }
+}
+
+bool CSQLiteRankingServer::IsValidPrefix(const std::string& prefix)
+{
+    std::lock_guard<std::mutex> lock(m_ValidPrefixListMutex);
+
+    for (auto& p : m_ValidPrefixList)
+    {
+        if (prefix == p)
+            return true;
+    }
+    return false;
+}
+
+CPlayerStats CSQLiteRankingServer::GetRankingSync(std::string nickname, std::string prefix)
+{
+    FixPrefix(prefix);
+
+    CPlayerStats stats;
+    if (!IsValidPrefix(prefix))
+    {
+        stats.Invalidate();
+        return stats;
+    }
+    else if(!IsValidNickname(nickname))
+    {
+        stats.Invalidate();
+        return stats;
+    }
+
+    std::string TableName = prefix + m_BaseTableName;
+    auto Columns = stats.keys();
+    size_t ColumnsSize = Columns.size();
+
+    std::stringstream ss;
+
+    ss << "SELECT ";
+    ss << "R.Key as Key , R.Rank as Rank,";
+
+    for (size_t i = 0; i < ColumnsSize; i++)
+    {
+        ss << " R." << Columns[i] << " as " << Columns[i];
+
+        if (i < ColumnsSize - 1)
+            ss << " ,\n";
+    }
+
+    // order by nickname as secondary criterium
+    ss << " FROM ( "
+       << "SELECT "
+       << "Key , "
+       << "ROW_NUMBER() OVER (ORDER BY " << m_RankingKey << (m_BiggestFirst ? " DESC " : " ASC , Key ASC") << ") Rank ,";
+
+    for (size_t i = 0; i < ColumnsSize; i++)
+    {
+        ss << " " << Columns[i] << " ";
+
+        if (i < ColumnsSize - 1)
+            ss << " ,\n";
+    }
+
+    ss << " FROM " << TableName << " ) as R"
+       << " WHERE Key = ? ;";
+
+
+    // lock mutex for multi threaded access
+    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
+
+    try
+    {
+        SQLite::Statement stmt{*m_pDatabase, ss.str()};
+
+        // sqlite binding starts counting at 1
+        stmt.bind(1, nickname);
+
+        if (stmt.executeStep())
+        {
+            // get rank column
+            stats.SetRank(stmt.getColumn("Rank").getInt());
+
+            // get all the other in CPlayerStats defined column values
+            for (auto& column : Columns)
+            {
+                stats[column] = stmt.getColumn(column.c_str()).getInt();
+            }
+            return stats;
+        }
+        else
+        {
+            // not found - > returns invalid player stats.
+            stats.Invalidate();
+            return stats;
+        }
+    }
+    catch (const SQLite::Exception& e)
+    {
+        throw;
+    }
+}
+
+void CSQLiteRankingServer::SetRankingSync(std::string nickname, CPlayerStats stats, std::string prefix)
+{
+    FixPrefix(prefix);
+
+    if (!IsValidPrefix(prefix))
+        throw SQLite::Exception("Invalid prefix(not in valid prefix list): " + prefix);
+    else if(!stats.IsValid())
+        throw SQLite::Exception("Invalid player statistics passed.");
+    else if(!IsValidNickname(nickname, prefix))
+        throw SQLite::Exception("Invalid nickname: " + nickname);
+    
+
+    std::string TableName = prefix + m_BaseTableName;
+    std::vector<std::string> Columns = stats.keys();
+    size_t ColumnsSize = Columns.size();
+
+    std::stringstream ss;
+
+    ss << "INSERT OR REPLACE INTO " << TableName << " ( ";
+
+    ss << "Key , "; // nickname is the primary key.
+
+    // all columns
+    for (size_t i = 0; i < ColumnsSize; i++)
+    {
+        ss << Columns[i];
+        if (i < ColumnsSize - 1)
+        {
+            ss << " , ";
+        }
+    }
+
+    // for evry column, create a bind variable, to escape possible user input
+    ss << " ) VALUES ( ";
+    ss << "?1 , "; // bind nickname
+
+    for (size_t i = 0; i < ColumnsSize; i++)
+    {
+        ss << "?" << (i + 2);
+        if (i < ColumnsSize - 1)
+        {
+            ss << " , ";
+        }
+    }
+    ss << " );";
+
+    // multithreaded context, but only one thread accessing the database is allowed.
+    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
+
+    try
+    {
+        // bind values to the execution statement
+        SQLite::Statement stmt{*m_pDatabase, ss.str()};
+
+        // columns start counting at 1, not at 0.
+        stmt.bind(1, nickname); // primary key
+
+        for (size_t i = 0; i < ColumnsSize; i++)
+        {
+            // column position offset
+            stmt.bind(i + 2, stats[Columns[i]]);
+        }
+
+
+        // execute statement.
+        stmt.exec();
+    }
+    catch (const SQLite::Exception& e)
+    {
+        // throw and add to backlog.
+        throw;
+    }
+}
+
+void CSQLiteRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats stats, std::string prefix)
+{
+    FixPrefix(prefix);
+
+    if (!IsValidPrefix(prefix))
+        throw SQLite::Exception("Invalid prefix(not in valid prefix list): " + prefix);
+    else if(!stats.IsValid())
+        throw SQLite::Exception("Invalid player statistics passed.");
+    else if(!IsValidNickname(nickname, prefix))
+        throw SQLite::Exception("Invalid nickname: " + nickname);
+    
+    CPlayerStats savedStats;
+    std::string TableName = prefix + m_BaseTableName;
+    std::vector<std::string> Columns = stats.keys();
+    size_t ColumnsSize = Columns.size();
+
+    std::stringstream ss;
+
+    ss << "SELECT ";
+    ss << "Key ,";
+
+    for (size_t i = 0; i < ColumnsSize; i++)
+    {
+        ss << " " << Columns[i];
+
+        if (i < ColumnsSize - 1)
+            ss << " ,\n";
+    }
+
+    ss << " FROM " << TableName << " WHERE Key = ? ;";
+
+
+    // lock mutex for multi threaded access
+    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
+
+    try
+    {
+        SQLite::Statement stmt{*m_pDatabase, ss.str()};
+
+        // sqlite binding starts counting at 1
+        stmt.bind(1, nickname);
+
+
+        if (stmt.executeStep())
+        {
+            // found player data
+
+            // get all the other in CPlayerStats defined column values
+            for (auto& column : Columns)
+            {
+                savedStats[column] = stmt.getColumn(column.c_str()).getInt();
+            }        
+        }
+        else
+        {
+            // no data retrieved -> player is not ranked yet.
+        }
+
+        // reset stringstream
+        ss.str(std::string());
+        ss.clear();
+
+        // update stats
+        if (!savedStats.IsValid())
+        {
+            // invalid, reset to a valid state
+            savedStats.Reset();
+        }
+
+        // savedStats is either empty or has the needed data stored.
+        savedStats += stats;
+
+        // construct query in order to insert tha updated player data
+        ss << "INSERT OR REPLACE INTO " << TableName << " ( ";
+
+        ss << "Key , "; // nickname is the primary key.
+
+        // all columns
+        for (size_t i = 0; i < ColumnsSize; i++)
+        {
+            ss << Columns[i];
+            if (i < ColumnsSize - 1)
+            {
+                ss << " , ";
+            }
+        }
+
+        // for evry column, create a bind variable, to escape possible user input
+        ss << " ) VALUES ( ";
+        ss << "?1 , "; // bind nickname
+
+        for (size_t i = 0; i < ColumnsSize; i++)
+        {
+            ss << "?" << (i + 2);
+            if (i < ColumnsSize - 1)
+            {
+                ss << " , ";
+            }
+        }
+        ss << " );";
+
+
+        // bind values to the execution statement
+        SQLite::Statement stmt2{*m_pDatabase, ss.str()};
+
+        // columns start counting at 1, not at 0.
+        stmt2.bind(1, nickname); // primary key
+
+        // bind new values to their respective columns
+        for (size_t i = 0; i < ColumnsSize; i++)
+        {
+            // column position offset
+            stmt2.bind(i + 2, savedStats[Columns[i]]);
+        }
+
+        // update player data.
+        stmt2.exec();
+    }
+    catch (const SQLite::Exception& e)
+    {
+        throw;
+    }
+}
+
+void CSQLiteRankingServer::DeleteRankingSync(std::string nickname, std::string prefix)
+{
+    FixPrefix(prefix);
+
+    if (!IsValidPrefix(prefix))
+        throw SQLite::Exception("Invalid prefix(not in valid prefix list): " + prefix);
+    else if(!IsValidNickname(nickname, prefix))
+        throw SQLite::Exception("Invalid nickname: " + nickname);
+
+    std::string TableName = prefix + m_BaseTableName;
+
+    std::stringstream ss;
+
+    ss << "DELETE FROM " << TableName << " WHERE Key = ?;";
+
+    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
+
+    try
+    {
+        SQLite::Statement stmt{*m_pDatabase, ss.str()};
+
+        // where key = nickname
+        stmt.bind(1, nickname);
+
+        // delete player data
+        stmt.exec();
+    }
+    catch(const SQLite::Exception& e)
+    {
+        throw;
+    }
+}
+
+IRankingServer::key_stats_vec_t CSQLiteRankingServer::GetTopRankingSync(int topNumber, std::string key, std::string prefix, bool biggestFirst)
+{
+    FixPrefix(prefix);
+
+    if (!IsValidPrefix(prefix))
+        throw SQLite::Exception("Invalid prefix: " + prefix);
+    
+    CPlayerStats tmpStat;
+    auto Columns = tmpStat.keys();
+    ssize_t ColumnsSize = Columns.size();
+
+    bool validKey = false;
+    for (std::string& k: Columns)
+    {
+        if (k == key)
+        {
+            validKey = true;
+            break;
+        }  
+    }
+    
+    if (!validKey)
+        throw SQLite::Exception("Invalid key passed: " + key);
+
+    std::string TableName = prefix + m_BaseTableName;
+
+    std::stringstream ss;
+
+    ss << "SELECT Key , ";
+
+    // all columns
+    for (size_t i = 0; i < ColumnsSize; i++)
+    {
+        ss << Columns[i];
+        if (i < ColumnsSize - 1)
+        {
+            ss << " , ";
+        }
+    }
+
+    // order by nickname as secondary criterium
+    ss << " FROM " << TableName 
+    << " ORDER BY " << m_RankingKey << ( biggestFirst ? " DESC " : " ASC ") 
+    << ", Key ASC " 
+    << " LIMIT " << topNumber << ";";
+
+    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
+    try
+    {   
+        IRankingServer::key_stats_vec_t result;
+        std::string tmpName;
+
+
+        SQLite::Statement stmt{*m_pDatabase, ss.str()};
+
+        while (stmt.executeStep())
+        {
+            tmpName = stmt.getColumn("Key").getString();            
+
+            for (auto &column : Columns)
+            {
+                tmpStat[column] = stmt.getColumn(column.c_str()).getInt();
+            }
+            
+            result.emplace_back(tmpName, tmpStat);
+
+            // reset tmp variables
+            tmpStat.Reset();
+            tmpName = {};
+
+        }
+        return result;
+    }
+    catch(const SQLite::Exception& e)
+    {
+        throw;
     }
 }
