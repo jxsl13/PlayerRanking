@@ -37,6 +37,10 @@ class IRankingServer
     // it is assumed that all methods called are ignored.
     bool m_DefaultConstructed;
 
+    // Synchronizing threads
+    std::mutex m_DatabaseMutex;
+
+
     std::vector<std::string> m_InvalidNicknames;
     bool IsValidNickname(const std::string& nickname, const std::string& prefix = "");
 
@@ -172,7 +176,6 @@ class CSQLiteRankingServer : public IRankingServer
     std::string m_FilePath;
 
 
-    std::mutex m_DatabaseMutex;
     SQLite::Database *m_pDatabase;
 
     std::mutex m_ValidPrefixListMutex;

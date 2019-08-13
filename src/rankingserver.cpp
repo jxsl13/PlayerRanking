@@ -46,6 +46,9 @@ bool IRankingServer::GetRanking(std::string nickname, IRankingServer::cb_stats_t
             CPlayerStats stats;
             try
             {
+                // lock mutex for multi threaded access
+                std::lock_guard<std::mutex> lock(m_DatabaseMutex);
+
                 stats = this->GetRankingSync(nick, pref); // get data from server
             }
             catch (const std::exception& e)
@@ -79,6 +82,9 @@ bool IRankingServer::DeleteRanking(std::string nickname, std::string prefix)
             [this](std::string nick, std::string pref) {
                 try
                 {
+                    // lock mutex for multi threaded access
+                    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
+
                     this->DeleteRankingSync(nick, pref);
                 }
                 catch (std::exception& e)
@@ -108,6 +114,9 @@ bool IRankingServer::GetTopRanking(int topNumber, std::string key, IRankingServe
 
             try
             {
+                // lock mutex for multi threaded access
+                std::lock_guard<std::mutex> lock(m_DatabaseMutex);
+
                 result = this->GetTopRankingSync(topNum, field, pref, bigFirst);
             }
             catch (const std::exception& e)
@@ -136,6 +145,9 @@ bool IRankingServer::UpdateRanking(std::string nickname, CPlayerStats stats, std
         [this](std::string nick, CPlayerStats stat, std::string pref) {
             try
             {
+                // lock mutex for multi threaded access
+                std::lock_guard<std::mutex> lock(m_DatabaseMutex);
+
                 // if this somehow fails and throws an error, handle backlogging
                 this->UpdateRankingSync(nick, stat, pref);
             }
@@ -164,6 +176,9 @@ bool IRankingServer::SetRanking(std::string nickname, CPlayerStats stats, std::s
         [this](std::string nick, CPlayerStats stat, std::string pref) {
             try
             {
+                // lock mutex for multi threaded access
+                std::lock_guard<std::mutex> lock(m_DatabaseMutex);
+
                 // if this fails, we add this pending action to our backlog.
                 this->SetRankingSync(nick, stat, pref);
             }
@@ -790,7 +805,6 @@ CSQLiteRankingServer::CSQLiteRankingServer(std::string filePath, std::vector<std
     m_DefaultConstructed = false;
     m_pDatabase = nullptr;
 
-    m_ValidPrefixListMutex.lock();
     m_ValidPrefixList.reserve(validPrefixList.size());
 
     for (auto& prefix : validPrefixList)
@@ -799,7 +813,6 @@ CSQLiteRankingServer::CSQLiteRankingServer(std::string filePath, std::vector<std
 
         m_ValidPrefixList.push_back(prefix);
     }
-    m_ValidPrefixListMutex.unlock();
 
     std::vector<std::string> Columns = stats.keys();
     size_t ColumnsSize = Columns.size();
@@ -831,8 +844,6 @@ CSQLiteRankingServer::CSQLiteRankingServer(std::string filePath, std::vector<std
         }
     }
 
-    std::cout << ss.str() << std::endl;
-
     try
     {
         m_FilePath = filePath;
@@ -861,8 +872,6 @@ CSQLiteRankingServer::CSQLiteRankingServer(std::string filePath, std::vector<std
 CSQLiteRankingServer::~CSQLiteRankingServer()
 {
     AwaitFutures();
-
-    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
 
     if (m_pDatabase)
     {
@@ -934,8 +943,7 @@ CPlayerStats CSQLiteRankingServer::GetRankingSync(std::string nickname, std::str
        << " WHERE Key = ? ;";
 
 
-    // lock mutex for multi threaded access
-    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
+    
 
     try
     {
@@ -1015,9 +1023,6 @@ void CSQLiteRankingServer::SetRankingSync(std::string nickname, CPlayerStats sta
     }
     ss << " );";
 
-    // multithreaded context, but only one thread accessing the database is allowed.
-    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
-
     try
     {
         // bind values to the execution statement
@@ -1073,10 +1078,6 @@ void CSQLiteRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats 
     }
 
     ss << " FROM " << TableName << " WHERE Key = ? ;";
-
-
-    // lock mutex for multi threaded access
-    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
 
     try
     {
@@ -1182,8 +1183,6 @@ void CSQLiteRankingServer::DeleteRankingSync(std::string nickname, std::string p
 
     ss << "DELETE FROM " << TableName << " WHERE Key = ?;";
 
-    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
-
     try
     {
         SQLite::Statement stmt{*m_pDatabase, ss.str()};
@@ -1246,7 +1245,6 @@ IRankingServer::key_stats_vec_t CSQLiteRankingServer::GetTopRankingSync(int topN
     << ", Key ASC " 
     << " LIMIT " << topNumber << ";";
 
-    std::lock_guard<std::mutex> lock(m_DatabaseMutex);
     try
     {   
         IRankingServer::key_stats_vec_t result;
