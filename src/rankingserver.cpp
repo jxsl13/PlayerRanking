@@ -1262,7 +1262,7 @@ IRankingServer::key_stats_vec_t CSQLiteRankingServer::GetTopRankingSync(int topN
     
     CPlayerStats tmpStat;
     auto Columns = tmpStat.keys();
-    ssize_t ColumnsSize = Columns.size();
+    size_t ColumnsSize = Columns.size();
 
     bool validKey = false;
     for (std::string& k: Columns)
