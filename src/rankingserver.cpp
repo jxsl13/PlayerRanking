@@ -351,7 +351,6 @@ void CRedisRankingServer::HandleReconnecting()
         std::this_thread::sleep_for(std::chrono::milliseconds(m_ReconnectIntervalMilliseconds));
 
         std::lock_guard<std::mutex> lock(m_ReconnectHandlerMutex);
-        std::cout << "isreconnecthandlerrunning " << m_IsReconnectHandlerRunning << std::endl;
         if (!m_IsReconnectHandlerRunning)
         {
             std::cout << "[redis]: Shutting down reconnect handler.\n";
