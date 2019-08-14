@@ -142,7 +142,6 @@ class CRedisRankingServer : public IRankingServer
     void HandleReconnecting();
     void StartReconnectHandler();
 
-
    protected:    
 
     // retrieve player data syncronously
@@ -166,22 +165,18 @@ class CRedisRankingServer : public IRankingServer
     // an instance of this object does nothing, it's behaving like a dummy instance
     CRedisRankingServer();
 
-    // clean up internal stuff and wait for internal asyncronous tasks to finish.
-    // might take as much time as the reconnect_ms(see the constructor parameter) to finish its tasks.
-    ~CRedisRankingServer();
-
-
     // constructor
     CRedisRankingServer(std::string host, size_t port, uint32_t timeout = 10000, uint32_t reconnect_ms = 5000);
-
-
+    
+    // clean up internal stuff and wait for internal asyncronous tasks to finish.
+    // might take as much time as the reconnect_ms(see the constructor parameter) to finish its tasks.
+    virtual ~CRedisRankingServer();
 };
 
 class CSQLiteRankingServer : public IRankingServer
 {
    private:
     std::string m_FilePath;
-
 
     SQLite::Database *m_pDatabase;
 
@@ -192,7 +187,6 @@ class CSQLiteRankingServer : public IRankingServer
     const std::string m_BaseTableName{"Ranking"};
 
    
-
     bool IsValidPrefix(const std::string& prefix);
     void FixPrefix(std::string& prefix);
 
@@ -214,9 +208,12 @@ class CSQLiteRankingServer : public IRankingServer
 
    public:
 
+    // dummy
     CSQLiteRankingServer();
+
+    // all prefixes need to be defined at construction time, in ordr to create the db tables.
     CSQLiteRankingServer(std::string filePath, std::vector<std::string> validPrefixList = {{""}}, int busyTimeoutMs = 10000);
-    ~CSQLiteRankingServer();
+    virtual ~CSQLiteRankingServer();
 };
 
 #endif // GAME_SERVER_RANKINGSERVER_H
