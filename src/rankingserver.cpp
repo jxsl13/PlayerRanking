@@ -432,7 +432,51 @@ CPlayerStats CRedisRankingServer::GetRankingSync(std::string nickname, std::stri
                 }
                 idx++;
             }
+
+            std::string rankingIndex = prefix + m_RankingKey;
+
+
+            if (m_BiggestFirst)
+            {                
+                std::future<cpp_redis::reply> rankFuture = m_Client.zrevrank(rankingIndex, nickname);
+
+                m_Client.sync_commit();
+                cpp_redis::reply reply = rankFuture.get();
+
+                if (!reply.is_null())
+                {
+                    // redis ranks are couted from 0
+                    stats.SetRank(reply.as_integer() + 1);
+                }
+                else
+                {
+                    stats.Invalidate();
+                }
+            }
+            else
+            {
+                std::future<cpp_redis::reply> rankFuture = m_Client.zrank(rankingIndex, nickname);
+
+                m_Client.sync_commit();
+                cpp_redis::reply reply = rankFuture.get();
+
+                if (!reply.is_null())
+                {
+                    // redis ranks are couted from 0
+                    stats.SetRank(reply.as_integer() + 1);
+                }
+                else
+                {
+                    stats.Invalidate();
+                }
+            }     
         }
+        else
+        {
+            // not found
+            stats.Invalidate();
+        }
+        
         return stats;
     }
     catch (const cpp_redis::redis_error& e)
@@ -458,50 +502,57 @@ IRankingServer::key_stats_vec_t CRedisRankingServer::GetTopRankingSync(int topNu
 
         cpp_redis::reply existsReply = existsFuture.get();
 
-        if (existsReply.is_integer() && existsReply.as_integer() != 0)
+        if (existsReply.is_integer())
         {
-            // specified index exists
-            std::future<cpp_redis::reply> resultFuture;
-
-            if (biggestFirst)
+            if (existsReply.as_integer() != 0)
             {
-                resultFuture = m_Client.zrevrangebyscore(index, "+inf", "0", 0, topNumber);
+                // specified index exists
+                std::future<cpp_redis::reply> resultFuture;
+
+                if (biggestFirst)
+                {
+                    resultFuture = m_Client.zrevrangebyscore(index, "+inf", "0", 0, topNumber);
+                }
+                else
+                {
+                    resultFuture = m_Client.zrangebyscore(index, "0", "+inf", 0, topNumber);
+                }
+
+                m_Client.sync_commit();
+
+                cpp_redis::reply result = resultFuture.get();
+
+                if (result.is_array())
+                {
+                    std::vector<std::pair<std::string, CPlayerStats> > sortedResult;
+
+                    for (auto& r : result.as_array())
+                    {
+                        if (r.is_string())
+                        {
+                            sortedResult.push_back({r.as_string(), {/* empty*/}});
+                        }
+                        else
+                        {
+                            throw cpp_redis::redis_error("Expected string as nickname.");
+                        }
+                    }
+
+                    for (auto& [nickname, stats] : sortedResult)
+                    {
+                        stats = GetRankingSync(nickname, prefix);
+                    }
+
+                    return sortedResult;
+                }
+                else
+                {
+                    throw cpp_redis::redis_error("Expected array return value of z[rev]rangebyscore(...)");
+                }
             }
             else
             {
-                resultFuture = m_Client.zrangebyscore(index, "0", "+inf", 0, topNumber);
-            }
-
-            m_Client.sync_commit();
-
-            cpp_redis::reply result = resultFuture.get();
-
-            if (result.is_array())
-            {
-                std::vector<std::pair<std::string, CPlayerStats> > sortedResult;
-
-                for (auto& r : result.as_array())
-                {
-                    if (r.is_string())
-                    {
-                        sortedResult.push_back({r.as_string(), {/* empty*/}});
-                    }
-                    else
-                    {
-                        throw cpp_redis::redis_error("Expected string as nickname.");
-                    }
-                }
-
-                for (auto& [nickname, stats] : sortedResult)
-                {
-                    stats = GetRankingSync(nickname, prefix);
-                }
-
-                return sortedResult;
-            }
-            else
-            {
-                throw cpp_redis::redis_error("Expected array return value of z[rev]rangebyscore(...)");
+                throw cpp_redis::redis_error("exists: expected integer != 0");
             }
         }
         else
@@ -522,10 +573,12 @@ void CRedisRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats s
     {
         CPlayerStats dbStats;
 
+        // throws exception, if connection fails
         dbStats = GetRankingSync(nickname, prefix);
 
+        // is only invalid if player could not be found
         if (!dbStats.IsValid())
-            throw cpp_redis::redis_error(""); // jump to lost connection or nick not found
+            dbStats.Reset();
 
         dbStats += stats;
 
@@ -556,16 +609,18 @@ void CRedisRankingServer::UpdateRankingSync(std::string nickname, CPlayerStats s
         {
             std::cout << "[redis]: lost connection: " << e.what() << std::endl;
             StartReconnectHandler();
-            throw;
+        }
+        else if (!IsValidNickname(nickname))
+        {
+            std::cout << "invalid nickname: " << nickname << std::endl;
+            return;
         }
         else
         {
-            std::cout << "invalid nickname: " << nickname << std::endl;
             // invalid player nick retrieved.
             // don't do anything then.
         }
-
-        return;
+        throw;
     }
 }
 
@@ -600,18 +655,18 @@ void CRedisRankingServer::SetRankingSync(std::string nickname, CPlayerStats stat
         {
             std::cout << "[redis]: lost connection: " << e.what() << std::endl;
             StartReconnectHandler();
-
-            // rethrow in order to handle backlog stuff.
-            throw;
+        }
+        else if (!IsValidNickname(nickname))
+        {
+            std::cout << "invalid nickname: " << nickname << std::endl;
+            return;
         }
         else
         {
-            std::cout << "invalid nickname: " << nickname << std::endl;
-            // invalid player nick retrieved.
-            // don't do anything then.
+            // unexpected error
         }
-
-        return;
+        // rethrow in order to handle backlog stuff.
+        throw;
     }
 }
 

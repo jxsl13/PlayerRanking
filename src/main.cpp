@@ -3,7 +3,7 @@
 
 int main(int argc, const char* argv[])
 {
-    std::string test{"sqlite"};
+    std::string test{"redis"};
 
     if (test == "redis")
     {
@@ -14,17 +14,17 @@ int main(int argc, const char* argv[])
         CPlayerStats tmp;
         auto keys = tmp.keys();
 
-        pRanks->SetRanking("test0",     {1, 2, 3, 4, 5, 6, 7, 8, 9});
-        pRanks->SetRanking("test1",     {2, 3, 4, 5, 6, 7, 8, 9, 10});
-        pRanks->SetRanking("test2",     {3, 4, 5, 6, 7, 8, 9, 10, 11});
-        pRanks->UpdateRanking("test3",  {4, 5, 6, 7, 8, 9, 10, 11, 12});
-        pRanks->UpdateRanking("test4",  {5, 6, 7, 8, 9, 10, 11, 12, 13});
-        pRanks->UpdateRanking("test5",  {6, 7, 8, 9, 10, 11, 1, 2, 3});
-        pRanks->UpdateRanking("test6",  {7, 8, 9, 10, 11, 1, 2, 3, 4});
-        pRanks->UpdateRanking("test7",  {8, 9, 10, 11, 1, 2, 3, 4, 5});
-        pRanks->UpdateRanking("test8",  {9, 10, 11, 1, 2, 3, 4, 5, 6});
-        pRanks->UpdateRanking("test9",  {10, 11, 1, 2, 3, 4, 5, 6, 7});
-        pRanks->UpdateRanking("test10", {11, 1, 2, 3, 4, 5, 6, 7, 8});
+        pRanks->SetRanking("test0",     {1,  2, 3,  4, 5,   6,  7, 8,   9});
+        pRanks->SetRanking("test1",     {2,  3, 4,  5, 6,   7,  8, 9,  10});
+        pRanks->SetRanking("test2",     {3,  4, 5,  6, 7,   8,  9, 10, 11});
+        pRanks->UpdateRanking("test3",  {4,  5, 6,  7, 8,   9, 10, 11, 12});
+        pRanks->UpdateRanking("test4",  {5,  6, 7,  8, 9,  10, 11, 12, 13});
+        pRanks->UpdateRanking("test5",  {6,  7, 8,  9, 10, 11,  1, 2,   3});
+        pRanks->UpdateRanking("test6",  {7,  8, 9, 10, 11,  0,  2, 3,   4});
+        pRanks->UpdateRanking("test7",  {8,  9, 10,11, 1,   1,  3, 4,   5});
+        pRanks->UpdateRanking("test8",  {9, 10, 11, 1, 2,   2,  4, 5,   6});
+        pRanks->UpdateRanking("test9",  {10,11, 1,  2, 3,   3,  5, 6,   7});
+        pRanks->UpdateRanking("test10", {11, 1, 2,  3, 4,   5,  4, 7,   8});
 
         std::string prefix{"0_"};
 
@@ -77,9 +77,9 @@ int main(int argc, const char* argv[])
             std::cout << std::endl;
         }
 
-        std::string nickname{"test0"};
+        std::string nickname{"test5"};
         pRanks->GetRanking(nickname, [nickname](CPlayerStats& stats) {
-            std::cout << nickname << " : " << stats << std::endl;
+            std::cout << "[" << stats.GetRank() << "]"<< nickname << " : " << stats << std::endl;
             std::cout << "is valid: " << (stats.IsValid() ? "valid" : "invalid") << std::endl;
         }); // no prefix needed, as this entry was not created with one.
 

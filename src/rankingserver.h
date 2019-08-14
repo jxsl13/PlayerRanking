@@ -41,6 +41,13 @@ class IRankingServer
     std::mutex m_DatabaseMutex;
 
 
+     // ranking order is based on this key.
+    const std::string m_RankingKey{"Score"};
+
+    // 
+    const bool m_BiggestFirst{true};
+
+
     std::vector<std::string> m_InvalidNicknames;
     bool IsValidNickname(const std::string& nickname, const std::string& prefix = "");
 
@@ -184,10 +191,7 @@ class CSQLiteRankingServer : public IRankingServer
     // table base name, that's added after the table prefix
     const std::string m_BaseTableName{"Ranking"};
 
-    // ranking order is based on this key.
-    const std::string m_RankingKey{"Score"};
-
-    const bool m_BiggestFirst{true};
+   
 
     bool IsValidPrefix(const std::string& prefix);
     void FixPrefix(std::string& prefix);
