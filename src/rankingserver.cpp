@@ -802,7 +802,7 @@ void CRedisRankingServer::DeleteRankingSync(std::string nickname, std::string pr
 
                 if (delIndexReply.is_integer())
                 {
-                    tmp = delIndexReply.is_integer();
+                    tmp = delIndexReply.as_integer();
                     if (!tmp)
                     {
                         std::cout << "Failed to delete an index: " << delIndexReply << std::endl;
