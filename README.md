@@ -1,6 +1,8 @@
 
 ```
-git clone --recursive https://github.com/jxsl13/redis_test.git
+git clone https://github.com/jxsl13/PlayerRanking.git
+git submodule update --init --recursive
+
 ```
 
 ```
